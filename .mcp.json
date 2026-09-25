@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "jules": {
+      "command": "docker",
+      "args": ["exec", "-i", "jules-mcp-server", "node", "dist/index.js"]
+    }
+  }
+}
