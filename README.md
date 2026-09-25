@@ -39,7 +39,7 @@ Since the Jules API v1alpha is **stateless** (no native scheduling endpoints), t
 
 - **Node.js** 18.0.0 or higher
 - **npm** 9.0.0 or higher
-- **Jules API Key** - Generate at [jules.google/settings](https://jules.google/settings)
+- **Jules API Key** - Generate at [jules.google.com/settings](https://jules.google.com/settings)
 - **GitHub Repositories** - Ensure your repositories are connected to Jules and the GitHub app is installed.
 
 ### Developer Setup
