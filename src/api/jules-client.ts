@@ -78,6 +78,26 @@ export class JulesClient {
   }
 
   /**
+   * Calculates a bounded retry delay, honoring a valid Retry-After header.
+   * @param attempt - Zero-based retry attempt.
+   * @param retryAfter - Optional Retry-After response header.
+   * @returns Delay in milliseconds, capped at 30 seconds.
+   */
+  private retryDelay(attempt: number, retryAfter?: string | null): number {
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      const retryAt = Date.parse(retryAfter);
+      const requested = Number.isFinite(seconds)
+        ? seconds * 1000
+        : Number.isFinite(retryAt)
+          ? Math.max(0, retryAt - Date.now())
+          : NaN;
+      if (Number.isFinite(requested)) return Math.min(requested, 30000);
+    }
+    return Math.min(Math.pow(2, attempt) * 1000, 30000);
+  }
+
+  /**
    * Generic HTTP request handler with authentication and error handling.
    * @param endpoint - The API endpoint to call (relative to the base URL).
    * @param options - The fetch options (method, headers, body, etc.).
@@ -97,10 +117,13 @@ export class JulesClient {
 
     let attempt = 0;
     let lastError: unknown;
+    let nextDelayMs: number | undefined;
+    const method = (options.method || 'GET').toUpperCase();
+    const mayRetryNetwork = ['GET', 'HEAD', 'OPTIONS'].includes(method);
 
     while (attempt <= this.maxRetries) {
       if (attempt > 0) {
-        const delay = Math.pow(2, attempt - 1) * 1000;
+        const delay = nextDelayMs ?? this.retryDelay(attempt - 1);
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
@@ -123,8 +146,16 @@ export class JulesClient {
               ? rawErrorBody.substring(0, 500) + '... [truncated]'
               : rawErrorBody;
 
-          // Retry on transient 5xx
-          if (response.status >= 500 && attempt < this.maxRetries) {
+          // Retry safe requests on transient errors and any request rejected with 429.
+          if (
+            (response.status === 429 ||
+              (response.status >= 500 && mayRetryNetwork)) &&
+            attempt < this.maxRetries
+          ) {
+            nextDelayMs = this.retryDelay(
+              attempt,
+              response.headers?.get?.('Retry-After')
+            );
             attempt++;
             lastError = new JulesAPIError(
               `Jules API error: ${response.statusText}`,
@@ -151,7 +182,11 @@ export class JulesClient {
 
         const isAbort =
           error instanceof Error && error.name === 'AbortError';
-        if ((isAbort || error instanceof Error) && attempt < this.maxRetries) {
+        if (
+          mayRetryNetwork &&
+          (isAbort || error instanceof Error) &&
+          attempt < this.maxRetries
+        ) {
           attempt++;
           lastError = error;
           continue;
@@ -189,10 +224,13 @@ export class JulesClient {
 
     let attempt = 0;
     let lastError: unknown;
+    let nextDelayMs: number | undefined;
+    const method = (options.method || 'GET').toUpperCase();
+    const mayRetryNetwork = ['GET', 'HEAD', 'OPTIONS'].includes(method);
 
     while (attempt <= this.maxRetries) {
       if (attempt > 0) {
-        const delay = Math.pow(2, attempt - 1) * 1000;
+        const delay = nextDelayMs ?? this.retryDelay(attempt - 1);
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
@@ -209,8 +247,16 @@ export class JulesClient {
               ? rawErrorBody.substring(0, 500) + '... [truncated]'
               : rawErrorBody;
 
-          // Retry on transient 5xx
-          if (response.status >= 500 && attempt < this.maxRetries) {
+          // A confirmed 429 may be retried; ambiguous writes are never replayed.
+          if (
+            (response.status === 429 ||
+              (response.status >= 500 && mayRetryNetwork)) &&
+            attempt < this.maxRetries
+          ) {
+            nextDelayMs = this.retryDelay(
+              attempt,
+              response.headers?.get?.('Retry-After')
+            );
             attempt++;
             lastError = new JulesAPIError(
               `Jules API error: ${response.statusText}`,
@@ -225,9 +271,9 @@ export class JulesClient {
             errorBody
           );
         }
-        // Body may be empty (204 No Content) — return {} rather than trying to parse JSON
-        const text = await response.text();
-        return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        // Successful mutation endpoints may return no content; callers must not
+        // infer failure from an empty or non-JSON response body.
+        return {};
       } catch (error) {
         clearTimeout(timeoutId);
 
@@ -237,7 +283,11 @@ export class JulesClient {
         }
 
         const isAbort = error instanceof Error && error.name === 'AbortError';
-        if ((isAbort || error instanceof Error) && attempt < this.maxRetries) {
+        if (
+          mayRetryNetwork &&
+          (isAbort || error instanceof Error) &&
+          attempt < this.maxRetries
+        ) {
           attempt++;
           lastError = error;
           continue;
@@ -323,13 +373,14 @@ export class JulesClient {
    * Approve the plan for a session in AWAITING_PLAN_APPROVAL state.
    * POST /v1alpha/sessions/{id}:approvePlan
    * @param sessionId - The ID of the session to approve the plan for.
-   * @returns A promise that resolves with the updated session.
+   * @returns A promise that resolves with the session state after approval.
    */
   async approvePlan(sessionId: string): Promise<Session> {
-    return this.request<Session>(`/sessions/${sessionId}:approvePlan`, {
+    await this.requestEmpty(`/sessions/${encodeURIComponent(sessionId)}:approvePlan`, {
       method: 'POST',
       body: '{}',
     });
+    return this.getSession(sessionId);
   }
 
   /**
@@ -337,16 +388,17 @@ export class JulesClient {
    * POST /v1alpha/sessions/{id}:sendMessage
    * @param sessionId - The ID of the session to send the message to.
    * @param request - The request body containing the message prompt.
-   * @returns A promise that resolves with the updated session.
+   * @returns A promise that resolves with the session state after sending.
    */
   async sendMessage(
     sessionId: string,
     request: SendMessageRequest
   ): Promise<Session> {
-    return this.request<Session>(`/sessions/${sessionId}:sendMessage`, {
+    await this.requestEmpty(`/sessions/${encodeURIComponent(sessionId)}:sendMessage`, {
       method: 'POST',
       body: JSON.stringify(request),
     });
+    return this.getSession(sessionId);
   }
 
   /**
@@ -371,7 +423,7 @@ export class JulesClient {
 
   /**
    * List activities for a session created after a given timestamp.
-   * GET /v1alpha/sessions/{id}/activities?filter=createTime>"{since}"
+   * GET /v1alpha/sessions/{id}/activities?createTime={since}
    * @param sessionId - The ID of the session to list activities for.
    * @param since - ISO timestamp boundary.
    * @param pageSize - The maximum number of activities to return.
@@ -385,7 +437,7 @@ export class JulesClient {
     return this.request<ListActivitiesResponse>(
       `/sessions/${sessionId}/activities${this.buildQuery({
         pageSize,
-        filter: `createTime>"${since.replace(/"/g, '')}"`,
+        createTime: since,
       })}`
     );
   }
@@ -402,15 +454,4 @@ export class JulesClient {
     });
   }
 
-  /**
-   * Reject the currently proposed plan for a session.
-   * DELETE /v1alpha/sessions/{id}
-   * @param sessionId - The ID of the session whose plan should be rejected.
-   * @returns A promise that resolves with the empty response.
-   */
-  async rejectPlan(sessionId: string): Promise<Record<string, unknown>> {
-    return this.requestEmpty(`/sessions/${sessionId}`, {
-      method: 'DELETE',
-    });
-  }
 }

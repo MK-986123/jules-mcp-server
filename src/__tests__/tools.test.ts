@@ -65,6 +65,16 @@ describe("JulesTools", () => {
     (sec.RepositoryValidator.validateRepository as Mock).mockReset();
 
     client = new JulesClient("test-key");
+    vi.mocked(client.getSource).mockResolvedValue({
+      name: "sources/github-myorg-myrepo",
+      githubRepo: {
+        owner: "owner",
+        repo: "repo",
+        htmlUrl: "https://github.com/owner/repo",
+        defaultBranch: { displayName: "develop" },
+        branches: [{ displayName: "develop" }, { displayName: "main" }],
+      },
+    });
     storage = new ScheduleStorage();
     scheduler = new CronEngine(storage, client);
     vi.mocked(CronEngine.validateCronExpression).mockImplementation(
@@ -382,17 +392,6 @@ describe("JulesTools", () => {
       );
     });
 
-    it("reject_plan returns canceled state", async () => {
-      vi.mocked(client.rejectPlan).mockResolvedValue({});
-
-      const result = await tools.manageSession({
-        session_id: "sess-1",
-        action: "reject_plan",
-      });
-
-      const parsed = JSON.parse(result) as Record<string, unknown>;
-      expect(parsed.newState).toBe("CANCELED");
-    });
   });
 
   // ── getSessionStatus ──────────────────────────────────────────────────
@@ -459,7 +458,7 @@ describe("JulesTools", () => {
       expect(client.getSession).toHaveBeenCalledTimes(2);
     });
 
-    it("throws timeout when state never reached", async () => {
+    it("returns a structured timeout with the last observed state", async () => {
       vi.useFakeTimers();
       const toolsPrivate = tools as unknown as {
         delay: (ms: number) => Promise<void>;
@@ -480,11 +479,36 @@ describe("JulesTools", () => {
         target_states: ["COMPLETED"],
       });
 
-      const parsed: { success: boolean; error: string } = JSON.parse(result);
-      expect(parsed.success).toBe(false);
+      const parsed: { timedOut: boolean; finalState: string } = JSON.parse(result);
+      expect(parsed.timedOut).toBe(true);
+      expect(parsed.finalState).toBe("IN_PROGRESS");
 
       vi.useRealTimers();
     });
+
+    it.each(["AWAITING_PLAN_APPROVAL", "AWAITING_USER_FEEDBACK", "PAUSED"])(
+      "returns immediately when state is %s",
+      async (state) => {
+        vi.mocked(client.getSession).mockResolvedValue(
+          makeSession({ id: "sess-1", state }),
+        );
+
+        const result = await tools.waitForSession({
+          session_id: "sess-1",
+          timeout_seconds: 30,
+          poll_interval_seconds: 5,
+          target_states: [
+            "COMPLETED",
+            "FAILED",
+            "AWAITING_PLAN_APPROVAL",
+            "AWAITING_USER_FEEDBACK",
+            "PAUSED",
+          ],
+        });
+        expect(JSON.parse(result).finalState).toBe(state);
+        expect(client.getSession).toHaveBeenCalledTimes(1);
+      },
+    );
   });
 
   // ── scheduleRecurringTask ─────────────────────────────────────────────
@@ -618,26 +642,15 @@ describe("JulesTools", () => {
   // ── deleteSession ─────────────────────────────────────────────────────
 
   describe("deleteSession", () => {
-    it("reports canceled for active sessions", async () => {
-      vi.mocked(client.getSession).mockResolvedValue(
-        makeSession({ id: "sess-active", state: "IN_PROGRESS" }),
-      );
+    it("deletes directly without racing a state read or inventing a state", async () => {
       vi.mocked(client.deleteSession).mockResolvedValue({});
 
       const result = await tools.deleteSession({ session_id: "sess-active" });
       const parsed = JSON.parse(result) as Record<string, unknown>;
-      expect(parsed.message).toContain("canceled");
-    });
-
-    it("reports deleted for completed sessions", async () => {
-      vi.mocked(client.getSession).mockResolvedValue(
-        makeSession({ id: "sess-done", state: "COMPLETED" }),
-      );
-      vi.mocked(client.deleteSession).mockResolvedValue({});
-
-      const result = await tools.deleteSession({ session_id: "sess-done" });
-      const parsed = JSON.parse(result) as Record<string, unknown>;
       expect(parsed.message).toContain("deleted");
+      expect(parsed.message).not.toContain("canceled");
+      expect(client.getSession).not.toHaveBeenCalled();
+      expect(client.deleteSession).toHaveBeenCalledWith("sess-active");
     });
   });
 
@@ -650,7 +663,7 @@ describe("JulesTools", () => {
         githubRepo: {
           owner: "owner",
           repo: "repo",
-          defaultBranch: "main",
+          defaultBranch: { displayName: "main" },
           htmlUrl: "https://github.com/owner/repo",
         },
       });
@@ -670,9 +683,12 @@ describe("JulesTools", () => {
       vi.mocked(client.listActivitiesSince).mockResolvedValue({
         activities: [
           {
-            type: "PLAN_GENERATED",
+            createTime: "2026-01-01T00:00:00Z",
             name: "activities/1",
-            timestamp: "2026-01-01T00:00:00Z",
+            originator: "agent",
+            description: "Generated a plan",
+            planGenerated: { plan: "Plan details" },
+            artifacts: [],
           },
         ],
       });

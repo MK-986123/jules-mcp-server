@@ -18,9 +18,9 @@ describe('CreateTaskSchema', () => {
     source: 'sources/github/owner/repo',
   };
 
-  it('accepts valid minimal input', () => {
+  it('accepts valid minimal input without forcing a branch', () => {
     const result = CreateTaskSchema.parse(base);
-    expect(result.branch).toBe('main');
+    expect(result.branch).toBeUndefined();
     expect(result.auto_create_pr).toBe(true);
     expect(result.require_plan_approval).toBe(false);
   });
@@ -50,6 +50,15 @@ describe('CreateTaskSchema', () => {
   it('accepts branch with slashes', () => {
     const result = CreateTaskSchema.parse({ ...base, branch: 'feature/my-branch' });
     expect(result.branch).toBe('feature/my-branch');
+  });
+
+  it('accepts opaque and legacy Jules source resource names', () => {
+    expect(
+      CreateTaskSchema.parse({ ...base, source: 'sources/github-myorg-myrepo' }).source
+    ).toBe('sources/github-myorg-myrepo');
+    expect(
+      CreateTaskSchema.parse({ ...base, source: 'sources/github/owner/repo' }).source
+    ).toBe('sources/github/owner/repo');
   });
 
   it('rejects branch with invalid characters', () => {
@@ -102,7 +111,7 @@ describe('ScheduleTaskSchema', () => {
 
   it('accepts valid input with defaults', () => {
     const result = ScheduleTaskSchema.parse(base);
-    expect(result.branch).toBe('main');
+    expect(result.branch).toBeUndefined();
     expect(result.auto_create_pr).toBe(true);
   });
 
@@ -124,13 +133,19 @@ describe('ScheduleTaskSchema', () => {
 describe('WaitForSessionSchema', () => {
   it('applies defaults', () => {
     const result = WaitForSessionSchema.parse({ session_id: 'sess-1' });
-    expect(result.timeout_seconds).toBe(300);
+    expect(result.timeout_seconds).toBe(30);
     expect(result.poll_interval_seconds).toBe(10);
-    expect(result.target_states).toEqual(['COMPLETED', 'FAILED', 'CANCELED']);
+    expect(result.target_states).toEqual([
+      'COMPLETED',
+      'FAILED',
+      'AWAITING_PLAN_APPROVAL',
+      'AWAITING_USER_FEEDBACK',
+      'PAUSED',
+    ]);
   });
 
-  it('rejects timeout below 30', () => {
-    expect(() => WaitForSessionSchema.parse({ session_id: 'sess-1', timeout_seconds: 5 })).toThrow();
+  it('rejects timeout below 5', () => {
+    expect(() => WaitForSessionSchema.parse({ session_id: 'sess-1', timeout_seconds: 3 })).toThrow();
   });
 
   it('rejects timeout above 1800', () => {

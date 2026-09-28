@@ -7,7 +7,7 @@
  * Represents a source repository for Jules.
  */
 export interface Source {
-  /** Resource name format: sources/github/{owner}/{repo} */
+  /** Opaque Jules resource name matching sources/{source}. */
   name: string;
   /** GitHub repository details */
   githubRepo?: {
@@ -18,7 +18,14 @@ export interface Source {
     /** The HTML URL of the GitHub repository. */
     htmlUrl: string;
     /** The default branch of the GitHub repository. */
-    defaultBranch: string;
+    defaultBranch?: {
+      /** Display name of the branch. */
+      displayName: string;
+    };
+    /** Available branches on the GitHub repository. */
+    branches?: { displayName: string }[];
+    /** Whether the GitHub repository is private. */
+    isPrivate?: boolean;
   };
 }
 
@@ -70,7 +77,7 @@ export type AutomationMode =
  * - `FAILED`: Session has failed.
  * - `CANCELED`: Session was canceled.
  */
-export type SessionState =
+export type KnownSessionState =
   | 'SESSION_STATE_UNSPECIFIED'
   | 'QUEUED'
   | 'PLANNING'
@@ -79,8 +86,10 @@ export type SessionState =
   | 'IN_PROGRESS'
   | 'PAUSED'
   | 'COMPLETED'
-  | 'FAILED'
-  | 'CANCELED';
+  | 'FAILED';
+
+/** Session state returned by Jules, including future alpha values. */
+export type SessionState = KnownSessionState | (string & {});
 
 /**
  * Represents a Jules session.
@@ -149,39 +158,34 @@ export interface ListSessionsResponse {
 }
 
 /**
- * Type of activity in a session.
- * - `PLAN_GENERATED`: A plan was generated.
- * - `PROGRESS_UPDATED`: Progress was updated.
- * - `SESSION_COMPLETED`: Session was completed.
- * - `MESSAGE_SENT`: A message was sent.
- * - `ACTIVITY_TYPE_UNSPECIFIED`: Unspecified activity type.
+ * Git patch attached to an activity artifact change set.
  */
-export type ActivityType =
-  | 'PLAN_GENERATED'
-  | 'PROGRESS_UPDATED'
-  | 'SESSION_COMPLETED'
-  | 'MESSAGE_SENT'
-  | 'AGENT_MESSAGED'
-  | 'PLAN_APPROVED'
-  | 'ACTIVITY_TYPE_UNSPECIFIED';
+export interface GitPatch {
+  /** Commit against which the patch is based. */
+  baseCommitId?: string;
+  /** Unified diff for the change set. */
+  unidiffPatch?: string;
+  /** Suggested commit message for the change set. */
+  suggestedCommitMessage?: string;
+}
 
-/**
- * Represents a set of changes in a plan.
- */
+/** Jules change set carried by an activity artifact. */
 export interface ChangeSet {
-  /** Unified patch for the full change set */
-  patch?: string;
-  /** Array of file changes */
-  changes?: {
-    /** The path of the file changed. */
-    path: string;
-    /** The diff of the changes. */
-    diff?: string;
-    /** The old content of the file. */
-    oldContent?: string;
-    /** The new content of the file. */
-    newContent?: string;
-  }[];
+  /** Git patch details, when present. */
+  gitPatch?: GitPatch;
+}
+
+/** Artifact attached to a Jules activity. */
+export interface ActivityArtifact {
+  /** Change set artifact. */
+  changeSet?: ChangeSet;
+  /** Optional media artifact. */
+  media?: {
+    url?: string;
+    mimeType?: string;
+    description?: string;
+  };
+  [key: string]: unknown;
 }
 
 /**
@@ -190,55 +194,23 @@ export interface ChangeSet {
 export interface Activity {
   /** Resource name format: sessions/{session_id}/activities/{activity_id} */
   name: string;
-  /** Activity type */
-  type: ActivityType;
-  /** Timestamp when activity occurred */
-  timestamp?: string;
-  /** Activity-specific payload */
-  planGenerated?: {
-    /** The generated plan description. */
-    plan: string;
-    /** The set of changes proposed in the plan. */
-    changeSet?: ChangeSet;
-  };
-  progressUpdated?: {
-    /** The progress message. */
-    message: string;
-    /** The completion percentage. */
-    percentage?: number;
-  };
-  sessionCompleted?: {
-    /** Whether the session completed successfully. */
-    success: boolean;
-    /** A message describing the completion. */
-    message?: string;
-    /** The URL of the created pull request, if any. */
-    pullRequestUrl?: string;
-    /** The final set of changes for the session, if available. */
-    changeSet?: ChangeSet;
-  };
-  messageSent?: {
-    /** The message content. */
-    prompt: string;
-    /** The sender of the message. */
-    sender: 'USER' | 'AGENT';
-  };
-  planApproved?: {
-    /** When the plan was approved. */
-    approvedAt: string;
-  };
-  agentMessaged?: {
-    /** Agent-authored message requiring user attention. */
-    message: string;
-  };
-  media?: {
-    /** Optional media URL. */
-    url?: string;
-    /** Media MIME type. */
-    mimeType?: string;
-    /** Optional human-readable description. */
-    description?: string;
-  };
+  /** Timestamp when activity occurred. */
+  createTime?: string;
+  /** Identity or system that originated the activity. */
+  originator?: string | Record<string, unknown>;
+  /** Human-readable activity description. */
+  description?: string;
+  /** Activity artifacts, including change sets. */
+  artifacts?: ActivityArtifact[];
+  /** Event-specific payloads. */
+  planGenerated?: Record<string, unknown>;
+  planApproved?: Record<string, unknown>;
+  userMessaged?: Record<string, unknown>;
+  agentMessaged?: Record<string, unknown>;
+  progressUpdated?: Record<string, unknown>;
+  sessionCompleted?: Record<string, unknown>;
+  sessionFailed?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 /**

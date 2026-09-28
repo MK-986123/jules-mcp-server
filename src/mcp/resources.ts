@@ -6,7 +6,7 @@
 import type { JulesClient } from '../api/jules-client.js';
 import type { ScheduleStorage } from '../storage/schedule-store.js';
 import type { CronEngine } from '../scheduler/cron-engine.js';
-import type { Activity, ChangeSet, Session } from '../types/jules-api.js';
+import type { Activity, GitPatch, Session, Source } from '../types/jules-api.js';
 import { smartTruncate } from '../utils/security.js';
 
 /**
@@ -52,24 +52,25 @@ export class JulesResources {
   /**
    * Finds the most recent change set attached to session activities.
    * @param activities - Activity list in chronological order.
-   * @returns The latest change set and its source activity, if available.
+   * @returns The latest Git patch and its source activity, if available.
    */
   private getLatestChangeSet(activities: Activity[]): {
-    changeSet?: ChangeSet;
-    activityType?: Activity['type'];
-    timestamp?: string;
+    gitPatch?: GitPatch;
+    activityName?: string;
+    createTime?: string;
   } {
     for (let index = activities.length - 1; index >= 0; index -= 1) {
       const activity = activities[index];
-      const changeSet =
-        activity.sessionCompleted?.changeSet || activity.planGenerated?.changeSet;
-
-      if (changeSet) {
-        return {
-          changeSet,
-          activityType: activity.type,
-          timestamp: activity.timestamp,
-        };
+      const artifacts = activity.artifacts || [];
+      for (let artifactIndex = artifacts.length - 1; artifactIndex >= 0; artifactIndex -= 1) {
+        const gitPatch = artifacts[artifactIndex]?.changeSet?.gitPatch;
+        if (gitPatch) {
+          return {
+            gitPatch,
+            activityName: activity.name,
+            createTime: activity.createTime,
+          };
+        }
       }
     }
 
@@ -84,14 +85,30 @@ export class JulesResources {
    * @returns {Promise<string>} A JSON string representing the connected sources.
    */
   async getSources(): Promise<string> {
-    const response = await this.client.listSources();
+    const sources: Source[] = [];
+    const seenTokens = new Set<string>();
+    let pageToken: string | undefined;
+    let nextPageToken: string | undefined;
+    let complete = false;
+    for (let page = 0; page < 100; page += 1) {
+      const response = await this.client.listSources(100, pageToken);
+      sources.push(...response.sources);
+      nextPageToken = response.nextPageToken;
+      if (!nextPageToken) {
+        complete = true;
+        break;
+      }
+      if (seenTokens.has(nextPageToken)) break;
+      seenTokens.add(nextPageToken);
+      pageToken = nextPageToken;
+    }
 
-    const formatted = response.sources.map((source) => ({
+    const formatted = sources.map((source) => ({
       name: source.name,
       repository: source.githubRepo
         ? `${source.githubRepo.owner}/${source.githubRepo.repo}`
         : 'Unknown',
-      defaultBranch: source.githubRepo?.defaultBranch || 'main',
+      defaultBranch: source.githubRepo?.defaultBranch?.displayName,
       url: source.githubRepo?.htmlUrl,
     }));
 
@@ -99,6 +116,8 @@ export class JulesResources {
       {
         description: 'Connected GitHub repositories available for Jules tasks. Note: For safe integration from AI agents (OpenClaw/Codex), always use require_plan_approval: true when targeting these repos.',
         count: formatted.length,
+        complete,
+        nextPageToken: complete ? undefined : nextPageToken,
         sources: formatted,
       },
       null,
@@ -149,6 +168,8 @@ export class JulesResources {
       {
         sessionId,
         count: response.activities.length,
+        complete: !response.nextPageToken,
+        nextPageToken: response.nextPageToken,
         activities: response.activities,
       },
       null,
@@ -168,72 +189,8 @@ export class JulesResources {
     // Fetch session and activities in parallel
     const [session, activitiesResponse] = await Promise.all([
       this.client.getSession(sessionId),
-      this.client.listActivities(sessionId),
+      this.client.listActivities(sessionId, 100),
     ]);
-
-    // Format activities for readability
-    const formattedActivities = activitiesResponse.activities.map(
-      (activity) => {
-        const base = {
-          type: activity.type,
-          timestamp: activity.timestamp,
-          media: activity.media,
-        };
-
-        // Add type-specific details
-        if (activity.planGenerated) {
-          return {
-            ...base,
-            plan: activity.planGenerated.plan,
-            changesPreview: activity.planGenerated.changeSet
-              ? `${activity.planGenerated.changeSet.changes?.length || 0} files`
-              : 'No changes',
-          };
-        }
-
-        if (activity.progressUpdated) {
-          return {
-            ...base,
-            message: activity.progressUpdated.message,
-            percentage: activity.progressUpdated.percentage,
-          };
-        }
-
-        if (activity.sessionCompleted) {
-          return {
-            ...base,
-            success: activity.sessionCompleted.success,
-            message: activity.sessionCompleted.message,
-            pullRequestUrl: activity.sessionCompleted.pullRequestUrl,
-            changeSet: activity.sessionCompleted.changeSet,
-          };
-        }
-
-        if (activity.messageSent) {
-          return {
-            ...base,
-            prompt: activity.messageSent.prompt,
-            sender: activity.messageSent.sender,
-          };
-        }
-
-        if (activity.agentMessaged) {
-          return {
-            ...base,
-            message: activity.agentMessaged.message,
-          };
-        }
-
-        if (activity.planApproved) {
-          return {
-            ...base,
-            approvedAt: activity.planApproved.approvedAt,
-          };
-        }
-
-        return base;
-      }
-    );
 
     const pullRequests = this.getPullRequests(session);
 
@@ -246,15 +203,17 @@ export class JulesResources {
           prompt: session.prompt,
           url: session.url,
           repository: this.getRepositoryLabel(session),
-          branch:
-            session.sourceContext?.githubRepoContext?.startingBranch || 'main',
+          branch: session.sourceContext?.githubRepoContext?.startingBranch,
           automationMode: session.automationMode,
           requirePlanApproval: session.requirePlanApproval,
           created: session.createTime,
           updated: session.updateTime,
           pullRequests,
         },
-        activities: formattedActivities,
+        activityCount: activitiesResponse.activities.length,
+        activitiesComplete: !activitiesResponse.nextPageToken,
+        nextPageToken: activitiesResponse.nextPageToken,
+        activities: activitiesResponse.activities,
       },
       null,
       2
@@ -269,13 +228,29 @@ export class JulesResources {
    * @returns {Promise<string>} A JSON string representing the latest patch and file-level changes.
    */
   async getSessionDiff(sessionId: string): Promise<string> {
-    const response = await this.client.listActivities(sessionId);
-    const latest = this.getLatestChangeSet(response.activities);
+    let pageToken: string | undefined;
+    let nextPageToken: string | undefined;
+    let complete = false;
+    const activities: Activity[] = [];
+    let latest: ReturnType<JulesResources['getLatestChangeSet']> = {};
+    for (let page = 0; page < 100; page += 1) {
+      const response = await this.client.listActivities(sessionId, 100, pageToken);
+      activities.push(...response.activities);
+      nextPageToken = response.nextPageToken;
+      if (!response.nextPageToken) {
+        complete = true;
+        break;
+      }
+      pageToken = response.nextPageToken;
+    }
+    latest = this.getLatestChangeSet(activities);
 
-    if (!latest.changeSet) {
+    if (!latest.gitPatch) {
       return JSON.stringify(
         {
           sessionId,
+          complete,
+          nextPageToken: complete ? undefined : nextPageToken,
           message:
             'No changeSet is available yet. The session may still be in progress or has not produced a diff.',
         },
@@ -287,11 +262,14 @@ export class JulesResources {
     return JSON.stringify(
       {
         sessionId,
-        activityType: latest.activityType,
-        timestamp: latest.timestamp,
-        patch: latest.changeSet.patch,
-        fileCount: latest.changeSet.changes?.length || 0,
-        changes: latest.changeSet.changes || [],
+        activityName: latest.activityName,
+        createTime: latest.createTime,
+        source: (await this.client.getSession(sessionId)).sourceContext?.source,
+        complete,
+        nextPageToken: complete ? undefined : nextPageToken,
+        baseCommitId: latest.gitPatch.baseCommitId,
+        unidiffPatch: latest.gitPatch.unidiffPatch,
+        suggestedCommitMessage: latest.gitPatch.suggestedCommitMessage,
       },
       null,
       2

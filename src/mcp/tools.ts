@@ -26,18 +26,19 @@ export const CreateTaskSchema = z.object({
   source: z
     .string()
     .regex(
-      /^sources\/github\/[\w-]+\/[\w-]+$/,
-      'Source must be in format sources/github/owner/repo'
+      /^sources\/.+$/,
+      'Source must be a Jules resource name matching sources/{source}'
     )
+    .refine((value) => !/[?#\s]/.test(value), 'Source name contains invalid characters')
     .describe(
-      'Repository resource name (format: sources/github/owner/repo). Check jules://sources resource first.'
+      'Exact Jules source resource name returned by the sources list. Do not construct or rewrite it.'
     ),
   branch: z
     .string()
     .regex(/^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*$/, 'Branch name contains invalid characters')
     .max(255, 'Branch name too long')
-    .default('main')
-    .describe('Git branch to base changes on'),
+    .optional()
+    .describe('Optional branch; defaults to the selected source default branch'),
   auto_create_pr: z
     .boolean()
     .default(true)
@@ -61,7 +62,7 @@ export const ManageSessionSchema = z.object({
     .regex(/^[\w-]+$/, 'Session ID contains invalid characters')
     .describe('The ID of the session to manage'),
   action: z
-    .enum(['approve_plan', 'send_message', 'reject_plan'])
+    .enum(['approve_plan', 'send_message'])
     .describe('Action to perform on the session'),
   message: z
     .string()
@@ -90,9 +91,9 @@ export const CreateRepolessTaskSchema = z.object({
 const waitTargetStateSchema = z.enum([
   'COMPLETED',
   'FAILED',
-  'CANCELED',
   'AWAITING_PLAN_APPROVAL',
   'AWAITING_USER_FEEDBACK',
+  'PAUSED',
 ]);
 
 export const WaitForSessionSchema = z.object({
@@ -102,9 +103,9 @@ export const WaitForSessionSchema = z.object({
     .describe('The ID of the session to wait for'),
   timeout_seconds: z
     .number()
-    .min(30, 'timeout_seconds must be at least 30')
+    .min(5, 'timeout_seconds must be at least 5')
     .max(1800, 'timeout_seconds must not exceed 1800')
-    .default(300)
+    .default(30)
     .describe('Maximum time to wait before timing out'),
   poll_interval_seconds: z
     .number()
@@ -114,7 +115,13 @@ export const WaitForSessionSchema = z.object({
     .describe('Polling interval while waiting for the target state'),
   target_states: z
     .array(waitTargetStateSchema)
-    .default(['COMPLETED', 'FAILED', 'CANCELED'])
+    .default([
+      'COMPLETED',
+      'FAILED',
+      'AWAITING_PLAN_APPROVAL',
+      'AWAITING_USER_FEEDBACK',
+      'PAUSED',
+    ])
     .describe('States that should stop the polling loop'),
 });
 
@@ -162,16 +169,17 @@ export const ScheduleTaskSchema = z.object({
   source: z
     .string()
     .regex(
-      /^sources\/github\/[\w-]+\/[\w-]+$/,
-      'Source must be in format sources/github/owner/repo'
+      /^sources\/.+$/,
+      'Source must be a Jules resource name matching sources/{source}'
     )
-    .describe('Repository resource name (sources/github/owner/repo)'),
+    .refine((value) => !/[?#\s]/.test(value), 'Source name contains invalid characters')
+    .describe('Exact Jules source resource name returned by sources list'),
   branch: z
     .string()
     .regex(/^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*$/, 'Branch name contains invalid characters')
     .max(255, 'Branch name too long')
-    .default('main')
-    .describe('Git branch to target'),
+    .optional()
+    .describe('Optional branch; defaults to the selected source default branch'),
   auto_create_pr: z
     .boolean()
     .default(true)
@@ -197,11 +205,9 @@ export const DeleteSessionSchema = z.object({
 export const GetSourceDetailsSchema = z.object({
   source_name: z
     .string()
-    .regex(
-      /^sources\/github\/[\w-]+\/[\w-]+$/,
-      'Source name must be in format sources/github/owner/repo'
-    )
-    .describe('The resource name of the source (e.g., sources/github/owner/repo)'),
+    .regex(/^sources\/.+$/, 'Source name must match sources/{source}')
+    .refine((value) => !/[?#\s]/.test(value), 'Source name contains invalid characters')
+    .describe('Exact source resource name returned by Jules'),
 });
 
 /**
@@ -232,7 +238,7 @@ export class JulesTools {
    * @returns Public monitor URL for the session.
    */
   private getMonitorUrl(session: Session): string {
-    return session.url || `https://jules.google.com/sessions/${session.id}`;
+    return session.url || `https://jules.google.com/session/${session.id}`;
   }
 
   /**
@@ -317,14 +323,30 @@ export class JulesTools {
       }
 
       // SECURITY: Validate repository allowlist
-      RepositoryValidator.validateRepository(args.source);
+      const source = await this.client.getSource(args.source);
+      RepositoryValidator.validateRepository(source);
+      const defaultBranch = source.githubRepo?.defaultBranch?.displayName;
+      const branch = args.branch || defaultBranch;
+      if (!branch) {
+        throw new Error(
+          `The selected source "${source.name}" has no default branch. Supply a branch explicitly.`
+        );
+      }
+      const knownBranches = source.githubRepo?.branches?.map(
+        (item) => item.displayName
+      );
+      if (args.branch && knownBranches?.length && !knownBranches.includes(args.branch)) {
+        throw new Error(
+          `Branch "${args.branch}" was not found on ${source.githubRepo?.owner}/${source.githubRepo?.repo}. Choose a branch returned by Jules or omit branch to use "${defaultBranch}".`
+        );
+      }
 
       const session = await this.client.createSession({
         prompt: args.prompt,
         sourceContext: {
-          source: args.source,
+          source: source.name,
           githubRepoContext: {
-            startingBranch: args.branch,
+            startingBranch: branch,
           },
         },
         automationMode: args.auto_create_pr
@@ -394,14 +416,6 @@ export class JulesTools {
         return {
           message: 'Plan approved. Session is now executing.',
           newState: session.state,
-        };
-      }
-
-      if (args.action === 'reject_plan') {
-        await this.client.rejectPlan(args.session_id);
-        return {
-          message: 'Plan rejected. Session has been canceled.',
-          newState: 'CANCELED',
         };
       }
 
@@ -482,12 +496,19 @@ export class JulesTools {
         }
 
         if (Date.now() - startedAt >= timeoutMs) {
-          throw new Error(
-            `Timed out waiting for session "${args.session_id}" after ${elapsedSeconds} seconds`
-          );
+          return {
+            sessionId: session.id,
+            title: session.title,
+            finalState: currentState,
+            elapsedSeconds,
+            timedOut: true,
+            nextSteps: this.getNextStepsForState(currentState || 'UNKNOWN'),
+            prUrl: this.getPullRequestUrl(session),
+          };
         }
 
-        await this.delay(args.poll_interval_seconds * 1000);
+        const remainingMs = timeoutMs - (Date.now() - startedAt);
+        await this.delay(Math.min(args.poll_interval_seconds * 1000, remainingMs));
       }
     });
   }
@@ -545,8 +566,24 @@ export class JulesTools {
         );
       }
 
-      // SECURITY: Validate repository allowlist
-      RepositoryValidator.validateRepository(args.source);
+      // Resolve source metadata before authorization and branch selection.
+      const source = await this.client.getSource(args.source);
+      RepositoryValidator.validateRepository(source);
+      const defaultBranch = source.githubRepo?.defaultBranch?.displayName;
+      const branch = args.branch || defaultBranch;
+      if (!branch) {
+        throw new Error(
+          `The selected source "${source.name}" has no default branch. Supply a branch explicitly.`
+        );
+      }
+      const knownBranches = source.githubRepo?.branches?.map(
+        (item) => item.displayName
+      );
+      if (args.branch && knownBranches?.length && !knownBranches.includes(args.branch)) {
+        throw new Error(
+          `Branch "${args.branch}" was not found on ${source.githubRepo?.owner}/${source.githubRepo?.repo}. Choose a branch returned by Jules or omit branch to use "${defaultBranch}".`
+        );
+      }
 
       // Create scheduled task
       const task: ScheduledTask = {
@@ -555,8 +592,8 @@ export class JulesTools {
         cron: args.cron_expression,
         taskPayload: {
           prompt: args.prompt,
-          source: args.source,
-          branch: args.branch,
+          source: source.name,
+          branch,
           automationMode: args.auto_create_pr
             ? 'AUTO_CREATE_PR'
             : 'AUTOMATION_MODE_UNSPECIFIED',
@@ -654,22 +691,9 @@ export class JulesTools {
     args: z.infer<typeof DeleteSessionSchema>
   ): Promise<string> {
     return this.executeWithErrorHandling(async () => {
-      const [session] = await Promise.all([
-        this.client.getSession(args.session_id),
-        this.client.deleteSession(args.session_id),
-      ]);
-      const activeStates: SessionState[] = [
-        'QUEUED',
-        'PLANNING',
-        'IN_PROGRESS',
-        'AWAITING_PLAN_APPROVAL',
-        'AWAITING_USER_FEEDBACK',
-      ];
-      const action = session.state && activeStates.includes(session.state)
-        ? 'canceled'
-        : 'deleted';
+      await this.client.deleteSession(args.session_id);
       return {
-        message: `Session "${args.session_id}" ${action} successfully`,
+        message: `Session "${args.session_id}" deleted successfully`,
       };
     });
   }
@@ -691,7 +715,7 @@ export class JulesTools {
         repository: source.githubRepo
           ? `${source.githubRepo.owner}/${source.githubRepo.repo}`
           : 'Unknown',
-        defaultBranch: source.githubRepo?.defaultBranch || 'main',
+        defaultBranch: source.githubRepo?.defaultBranch?.displayName,
         url: source.githubRepo?.htmlUrl,
         metadata: source.githubRepo,
       };
@@ -721,7 +745,6 @@ export class JulesTools {
         'Session completed. Check the final activity for Pull Request URL or artifacts.',
       FAILED:
         'Session failed. Review activities to diagnose the issue.',
-      CANCELED: 'Session was canceled.',
     };
 
     return stateGuide[state] || 'Unknown state. Check session activities.';

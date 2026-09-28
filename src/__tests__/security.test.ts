@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { RepositoryValidator, smartTruncate, retryWithBackoff } from '../utils/security.js';
 
+const sourceFor = (owner: string, repo: string) => ({
+  name: 'sources/github-myorg-myrepo',
+  githubRepo: { owner, repo, htmlUrl: 'https://github.com/owner/repo' },
+});
+
 describe('RepositoryValidator', () => {
   beforeEach(() => {
     // Reset private static property for isolated tests
@@ -47,17 +52,17 @@ describe('RepositoryValidator', () => {
       RepositoryValidator.initialize();
 
       expect(() => {
-        RepositoryValidator.validateRepository('sources/github/owner/repo');
+        RepositoryValidator.validateRepository(sourceFor('owner', 'repo'));
       }).not.toThrow();
     });
 
-    it('should throw for invalid source format', () => {
+    it('requires resolved repository metadata when an allowlist is configured', () => {
       vi.stubEnv('JULES_ALLOWED_REPOS', 'owner/repo');
       RepositoryValidator.initialize();
 
       expect(() => {
-        RepositoryValidator.validateRepository('invalid/format');
-      }).toThrow('Invalid source format: invalid/format. Expected sources/github/owner/repo');
+        RepositoryValidator.validateRepository({ name: 'sources/opaque-id' });
+      }).toThrow(/no GitHub owner\/repository metadata/);
     });
 
     it('should not throw if repository is in allowlist', () => {
@@ -65,7 +70,7 @@ describe('RepositoryValidator', () => {
       RepositoryValidator.initialize();
 
       expect(() => {
-        RepositoryValidator.validateRepository('sources/github/owner/repo');
+        RepositoryValidator.validateRepository(sourceFor('owner', 'repo'));
       }).not.toThrow();
     });
 
@@ -74,7 +79,7 @@ describe('RepositoryValidator', () => {
       RepositoryValidator.initialize();
 
       expect(() => {
-        RepositoryValidator.validateRepository('sources/github/owner/repo2');
+        RepositoryValidator.validateRepository(sourceFor('owner', 'repo2'));
       }).toThrow(/Repository "owner\/repo2" is not in the allowed list/);
     });
 
@@ -83,7 +88,7 @@ describe('RepositoryValidator', () => {
       RepositoryValidator.initialize();
       try {
         expect(() =>
-          RepositoryValidator.validateRepository('sources/github/attacker/probe')
+          RepositoryValidator.validateRepository(sourceFor('attacker', 'probe'))
         ).toThrow(
           expect.not.stringContaining('secret-owner')
         );

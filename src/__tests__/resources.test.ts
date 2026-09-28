@@ -78,7 +78,9 @@ describe('JulesResources', () => {
           githubRepo: {
             owner: 'owner',
             repo: 'repo',
-            defaultBranch: 'main',
+            defaultBranch: { displayName: 'main' },
+            branches: [{ displayName: 'main' }],
+            isPrivate: false,
             htmlUrl: 'https://github.com/owner/repo',
           },
         },
@@ -94,27 +96,36 @@ describe('JulesResources', () => {
     expect(result.sources[0].repository).toBe('owner/repo');
     expect(result.sources[0].url).toBe('https://github.com/owner/repo');
     expect(result.sources[1].repository).toBe('Unknown');
+    expect(result.sources[0].defaultBranch).toBe('main');
   });
 
   it('getSessionActivities returns formatted activities', async () => {
     (clientMock.listActivities as ReturnType<typeof vi.fn>).mockResolvedValue({
       activities: [
         {
-          type: 'PLAN_GENERATED',
-          timestamp: '2026-01-01T00:00:00Z',
+          name: 'sessions/sess1/activities/1',
+          createTime: '2026-01-01T00:00:00Z',
+          originator: 'agent',
+          description: 'Plan generated',
+          planGenerated: { plan: 'Plan details' },
         },
       ],
     });
 
     const result = JSON.parse(await resources.getSessionActivities('sess1'));
     expect(result.count).toBe(1);
-    expect(result.activities[0].type).toBe('PLAN_GENERATED');
+    expect(result.activities[0].createTime).toBe('2026-01-01T00:00:00Z');
+    expect(result.activities[0].planGenerated.plan).toBe('Plan details');
   });
 
   it('getSessionFull returns complete session with activities formatted correctly', async () => {
     (clientMock.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: 'sess-full',
       state: 'COMPLETED',
+      sourceContext: {
+        source: 'sources/github-myorg-myrepo',
+        githubRepoContext: { startingBranch: 'develop' },
+      },
       outputs: [
         {
           pullRequest: {
@@ -128,35 +139,45 @@ describe('JulesResources', () => {
     (clientMock.listActivities as ReturnType<typeof vi.fn>).mockResolvedValue({
       activities: [
         {
-          type: 'PLAN_GENERATED',
-          timestamp: '2026-01-01T00:00:00Z',
+          name: 'sessions/sess-full/activities/1',
+          createTime: '2026-01-01T00:00:00Z',
+          description: 'Plan generated',
           planGenerated: {
             plan: 'Step 1: Code',
-            changeSet: { changes: [{ file: 'test.ts' }] }
-          }
+          },
+          artifacts: [
+            { changeSet: { gitPatch: { unidiffPatch: 'diff --git a/test.ts' } } },
+          ],
         },
         {
-          type: 'PROGRESS_UPDATED',
-          progressUpdated: { message: 'working', percentage: 50 }
+          name: 'sessions/sess-full/activities/2',
+          createTime: '2026-01-01T00:01:00Z',
+          progressUpdated: { message: 'working', percentage: 50 },
         },
         {
-          type: 'SESSION_COMPLETED',
-          sessionCompleted: { success: true, message: 'done', pullRequestUrl: 'https://github.com/owner/repo/pull/1' }
+          name: 'sessions/sess-full/activities/3',
+          createTime: '2026-01-01T00:02:00Z',
+          sessionCompleted: { message: 'done' },
         },
         {
-          type: 'MESSAGE_SENT',
-          messageSent: { prompt: 'do this', sender: 'USER' }
+          name: 'sessions/sess-full/activities/4',
+          createTime: '2026-01-01T00:03:00Z',
+          userMessaged: { prompt: 'do this' },
         },
         {
-          type: 'AGENT_MESSAGED',
-          agentMessaged: { message: 'I am doing this' }
+          name: 'sessions/sess-full/activities/5',
+          createTime: '2026-01-01T00:04:00Z',
+          agentMessaged: { message: 'I am doing this' },
         },
         {
-          type: 'PLAN_APPROVED',
-          planApproved: { approvedAt: '2026-01-01T00:00:00Z' }
+          name: 'sessions/sess-full/activities/6',
+          createTime: '2026-01-01T00:05:00Z',
+          planApproved: { approvedAt: '2026-01-01T00:00:00Z' },
         },
         {
-          type: 'UNKNOWN_TYPE',
+          name: 'sessions/sess-full/activities/7',
+          createTime: '2026-01-01T00:06:00Z',
+          description: 'Future alpha event',
         }
       ],
     });
@@ -165,18 +186,14 @@ describe('JulesResources', () => {
     expect(result.session.id).toBe('sess-full');
     expect(result.session.pullRequests).toHaveLength(1);
 
-    // Check activities mapping
     expect(result.activities).toHaveLength(7);
-    expect(result.activities[0].plan).toBe('Step 1: Code');
-    expect(result.activities[0].changesPreview).toBe('1 files');
-    expect(result.activities[1].message).toBe('working');
-    expect(result.activities[2].success).toBe(true);
-    expect(result.activities[3].prompt).toBe('do this');
-    expect(result.activities[4].message).toBe('I am doing this');
-    expect(result.activities[5].approvedAt).toBe('2026-01-01T00:00:00Z');
+    expect(result.activities[0].createTime).toBe('2026-01-01T00:00:00Z');
+    expect(result.activities[0].artifacts[0].changeSet.gitPatch.unidiffPatch).toContain('diff --git');
+    expect(result.activities[3].userMessaged.prompt).toBe('do this');
+    expect(result.session.branch).toBe('develop');
   });
 
-  it('getSessionFull handles null changes in planGenerated', async () => {
+  it('getSessionFull exposes pagination rather than implying complete history', async () => {
     (clientMock.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: 'sess-full-2',
       state: 'PLANNING',
@@ -185,23 +202,16 @@ describe('JulesResources', () => {
     (clientMock.listActivities as ReturnType<typeof vi.fn>).mockResolvedValue({
       activities: [
         {
-          type: 'PLAN_GENERATED',
-          planGenerated: {
-            plan: 'Step 1: Null changes',
-            changeSet: { changes: null }
-          }
-        },
-        {
-          type: 'PLAN_GENERATED',
-          planGenerated: {
-            plan: 'Step 2: No changeset',
-          }
+          name: 'sessions/sess-full-2/activities/1',
+          createTime: '2026-01-01T00:00:00Z',
+          description: 'Activity on first page',
         }
       ],
+      nextPageToken: 'next',
     });
 
     const result = JSON.parse(await resources.getSessionFull('sess-full-2'));
-    expect(result.activities[0].changesPreview).toBe('0 files');
-    expect(result.activities[1].changesPreview).toBe('No changes');
+    expect(result.activitiesComplete).toBe(false);
+    expect(result.nextPageToken).toBe('next');
   });
 });

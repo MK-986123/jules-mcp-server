@@ -170,13 +170,44 @@ describe('JulesClient Methods', () => {
   });
 
   it('approvePlan', async () => {
-    mockSuccess({ id: '1', state: 'IN_PROGRESS' });
+    const mockFetch = global.fetch as ReturnType<typeof vi.fn>;
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue(''),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({ id: '1', state: 'IN_PROGRESS' }),
+      });
     await expect(client.approvePlan('1')).resolves.toEqual({ id: '1', state: 'IN_PROGRESS' });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][1].method).toBe('POST');
   });
 
-  it('sendMessage', async () => {
-    mockSuccess({ id: '1' });
-    await expect(client.sendMessage('1', { prompt: 'hello' })).resolves.toEqual({ id: '1' });
+  it('sendMessage handles an empty success body without repeating its POST', async () => {
+    const mockFetch = global.fetch as ReturnType<typeof vi.fn>;
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue(''),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({ id: '1', state: 'IN_PROGRESS' }),
+      });
+
+    await expect(client.sendMessage('1', { prompt: 'hello' })).resolves.toEqual({
+      id: '1',
+      state: 'IN_PROGRESS',
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls.filter(([, options]) => options.method === 'POST')).toHaveLength(1);
+    expect(mockFetch.mock.calls[0][0]).toContain('/sessions/1:sendMessage');
   });
 
   it('listActivities', async () => {
@@ -187,6 +218,9 @@ describe('JulesClient Methods', () => {
   it('listActivitiesSince', async () => {
     mockSuccess({ activities: [] });
     await expect(client.listActivitiesSince('1', '2025-01-01', 10)).resolves.toEqual({ activities: [] });
+    const url = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(url).toContain('createTime=2025-01-01');
+    expect(url).not.toContain('filter=');
   });
 
   it('deleteSession', async () => {
@@ -194,9 +228,4 @@ describe('JulesClient Methods', () => {
     await expect(client.deleteSession('1')).resolves.toEqual({});
   });
 
-  it('rejectPlan', async () => {
-    mockSuccess();
-    await expect(client.rejectPlan('1')).resolves.toEqual({});
-  });
 });
-

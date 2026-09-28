@@ -2,6 +2,8 @@
  * Security utilities for repository access control and validation.
  */
 
+import type { Source } from '../types/jules-api.js';
+
 export class SecurityError extends Error {
   constructor(message: string) {
     super(message);
@@ -45,25 +47,24 @@ export class RepositoryValidator {
   /**
    * Validates that a repository is allowed to be accessed.
    *
-   * @param source - The source repository string in the format "sources/github/owner/repo"
+   * @param source - Source metadata returned by Jules.
    * @returns {void} No return value.
    * @throws {Error} if the source format is invalid or if the repository is not in the allowlist.
    */
-  static validateRepository(source: string): void {
+  static validateRepository(source: Source): void {
     // If no allowlist is configured, allow all repositories (opt-in security)
     if (!this.allowedRepos || this.allowedRepos.length === 0) {
       return;
     }
 
-    // Extract owner/repo from source format: sources/github/owner/repo
-    const match = /^sources\/github\/(.+)$/.exec(source);
-    if (!match) {
-      throw new Error(
-        `Invalid source format: ${source}. Expected sources/github/owner/repo`
+    const repository = source.githubRepo;
+    if (!repository?.owner || !repository.repo) {
+      throw new SecurityError(
+        'The selected Jules source has no GitHub owner/repository metadata, so it cannot be checked against JULES_ALLOWED_REPOS.'
       );
     }
 
-    const repoPath = match[1];
+    const repoPath = `${repository.owner}/${repository.repo}`;
 
     if (!this.allowedRepos.includes(repoPath)) {
       throw new SecurityError(

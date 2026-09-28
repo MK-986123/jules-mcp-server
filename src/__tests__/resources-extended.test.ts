@@ -39,7 +39,7 @@ describe('JulesResources — extended coverage', () => {
             githubRepo: {
               owner: 'owner',
               repo: 'repo',
-              defaultBranch: 'main',
+              defaultBranch: { displayName: 'main' },
               htmlUrl: 'https://github.com/owner/repo',
             },
           },
@@ -53,14 +53,30 @@ describe('JulesResources — extended coverage', () => {
   });
 
   describe('getSessionActivities', () => {
-    it('returns activity list', async () => {
+    it('returns current activity fields and cursor metadata', async () => {
       (clientMock.listActivities as ReturnType<typeof vi.fn>).mockResolvedValue({
-        activities: [{ type: 'planGenerated', timestamp: '2026-01-01T00:00:00Z' }],
+        activities: [{
+          name: 'sessions/sess-1/activities/1',
+          createTime: '2026-01-01T00:00:00Z',
+          originator: 'agent',
+          description: 'Plan generated',
+          planGenerated: { plan: 'Plan' },
+        }],
+        nextPageToken: 'cursor-1',
       });
 
-      const result = JSON.parse(await resources.getSessionActivities('sess-1')) as { sessionId: string; count: number };
+      const result = JSON.parse(await resources.getSessionActivities('sess-1')) as {
+        sessionId: string;
+        count: number;
+        complete: boolean;
+        nextPageToken: string;
+        activities: { createTime: string }[];
+      };
       expect(result.sessionId).toBe('sess-1');
       expect(result.count).toBe(1);
+      expect(result.complete).toBe(false);
+      expect(result.nextPageToken).toBe('cursor-1');
+      expect(result.activities[0].createTime).toBe('2026-01-01T00:00:00Z');
     });
   });
 
@@ -76,9 +92,11 @@ describe('JulesResources — extended coverage', () => {
       (clientMock.listActivities as ReturnType<typeof vi.fn>).mockResolvedValue({
         activities: [
           {
-            type: 'sessionCompleted',
-            timestamp: '2026-01-01T01:00:00Z',
-            sessionCompleted: { success: true, message: 'Done' },
+            name: 'sessions/sess-1/activities/1',
+            createTime: '2026-01-01T01:00:00Z',
+            originator: 'agent',
+            description: 'Session completed',
+            sessionCompleted: { message: 'Done' },
           },
         ],
       });
@@ -90,26 +108,40 @@ describe('JulesResources — extended coverage', () => {
   });
 
   describe('getSessionDiff', () => {
-    it('returns changeset when available', async () => {
+    it('returns current git patch artifact metadata', async () => {
       const activity: Activity = {
-        type: 'PLAN_GENERATED',
-        name: 'activities/plan-generated-1',
-        timestamp: '2026-01-01T00:00:00Z',
-        planGenerated: {
-          plan: 'Fix the thing',
-          changeSet: {
-            patch: 'diff --git a/file.ts',
-            changes: [{ path: 'file.ts', diff: '@@-1+1@@' }],
+        name: 'sessions/sess-1/activities/plan-generated-1',
+        createTime: '2026-01-01T00:00:00Z',
+        artifacts: [
+          {
+            changeSet: {
+              gitPatch: {
+                baseCommitId: 'abc123',
+                unidiffPatch: 'diff --git a/file.ts',
+                suggestedCommitMessage: 'Fix the thing',
+              },
+            },
           },
-        },
+        ],
       };
       (clientMock.listActivities as ReturnType<typeof vi.fn>).mockResolvedValue({
         activities: [activity],
       });
+      (clientMock.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'sess-1',
+        sourceContext: { source: 'sources/github-myorg-myrepo' },
+      });
 
-      const result = JSON.parse(await resources.getSessionDiff('sess-1')) as { patch: string; fileCount: number };
-      expect(result.patch).toContain('diff --git');
-      expect(result.fileCount).toBe(1);
+      const result = JSON.parse(await resources.getSessionDiff('sess-1')) as {
+        unidiffPatch: string;
+        baseCommitId: string;
+        suggestedCommitMessage: string;
+        source: string;
+      };
+      expect(result.unidiffPatch).toContain('diff --git');
+      expect(result.baseCommitId).toBe('abc123');
+      expect(result.suggestedCommitMessage).toBe('Fix the thing');
+      expect(result.source).toBe('sources/github-myorg-myrepo');
     });
 
     it('returns no-changeset message when none available', async () => {
