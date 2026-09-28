@@ -132,6 +132,7 @@ export class JulesResources {
     return JSON.stringify(
       {
         description: 'Connected GitHub repositories available for Jules tasks. Note: For safe integration from AI agents (OpenClaw/Codex), always use require_plan_approval: true when targeting these repos.',
+        untrustedContentNotice: UNTRUSTED_CONTENT_NOTICE,
         count: formatted.length,
         complete,
         nextPageToken: complete ? undefined : nextPageToken,

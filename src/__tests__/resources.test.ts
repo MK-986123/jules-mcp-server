@@ -45,6 +45,7 @@ describe('JulesResources', () => {
 
     const result = JSON.parse(await resources.getSessionsList());
     expect(result.count).toBe(1);
+    expect(result.untrustedContentNotice).toContain('untrusted data');
     expect(result.sessions[0].id).toBe('abc123');
     expect(result.sessions[0].repository).toBe('sources/github/owner/repo');
   });
@@ -114,6 +115,7 @@ describe('JulesResources', () => {
 
     const result = JSON.parse(await resources.getSessionActivities('sess1'));
     expect(result.count).toBe(1);
+    expect(result.untrustedContentNotice).toContain('untrusted data');
     expect(result.activities[0].createTime).toBe('2026-01-01T00:00:00Z');
     expect(result.activities[0].planGenerated.plan).toBe('Plan details');
   });
@@ -184,6 +186,7 @@ describe('JulesResources', () => {
 
     const result = JSON.parse(await resources.getSessionFull('sess-full'));
     expect(result.session.id).toBe('sess-full');
+    expect(result.untrustedContentNotice).toContain('untrusted data');
     expect(result.session.pullRequests).toHaveLength(1);
 
     expect(result.activities).toHaveLength(7);
