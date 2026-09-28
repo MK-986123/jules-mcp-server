@@ -41,7 +41,7 @@ The Jules MCP Server grants AI assistants the ability to create, schedule, and a
 - Use separate keys for different environments (dev/staging/prod)
 - Audit key usage through Jules's web interface
 
-### 2. Repository Allowlist (Mandatory for Production)
+### 2. Repository Allowlist
 
 Set `JULES_ALLOWED_REPOS` to restrict modification scope:
 
@@ -50,19 +50,7 @@ Set `JULES_ALLOWED_REPOS` to restrict modification scope:
 export JULES_ALLOWED_REPOS="myorg/sandbox,myorg/test-repo"
 ```
 
-**Implementation:** The server validates the `source` parameter in `create_coding_task` against this list before calling the API.
-
-#### Enforcement Logic
-
-```typescript
-if (process.env.JULES_ALLOWED_REPOS) {
-  const allowed = process.env.JULES_ALLOWED_REPOS.split(',');
-  const repoName = source.replace('sources/github/', '');
-  if (!allowed.includes(repoName)) {
-    throw new Error('Repository not in JULES_ALLOWED_REPOS');
-  }
-}
-```
+The server resolves source metadata through Jules and compares the configured `owner/repo` entries with `githubRepo.owner` and `githubRepo.repo`. Jules source names are opaque and must not be parsed to authorize access.
 
 ### 3. Plan Approval Workflow
 
@@ -82,7 +70,7 @@ For repositories containing sensitive logic or production code:
    - Unintended side effects
    - Security vulnerabilities introduced
    - Breaking changes
-4. Explicitly approve via `manage_session` tool
+4. Explicitly approve via the `approve_plan` tool
 
 **Bypass Protection:** The server could enforce approval for specific repositories:
 

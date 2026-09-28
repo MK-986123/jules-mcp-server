@@ -7,21 +7,21 @@ Complete installation instructions for the Jules MCP Server.
 ### Minimum Requirements
 
 - **Operating System:** macOS, Windows, Linux
-- **Node.js:** 18.0.0 or higher
+- **Node.js:** 20.0.0 or higher
 - **npm:** 9.0.0 or higher (comes with Node.js)
 - **Memory:** 100MB+ available RAM
 - **Disk:** 50MB for installation
 
 ### Recommended Requirements
 
-- **Node.js:** 20.x LTS
+- **Node.js:** 22.x LTS
 - **npm:** 10.x
 - **Memory:** 512MB+ for smooth operation with multiple schedules
 
 ### Check Your Version
 
 ```bash
-node --version  # Should be v18.0.0 or higher
+node --version  # Should be v20.0.0 or higher
 npm --version   # Should be 9.0.0 or higher
 ```
 
@@ -203,6 +203,29 @@ If using an MCP extension for VS Code:
 }
 ```
 
+### Claude Code (stdio)
+
+After building, register the local stdio server:
+
+```bash
+claude mcp add --transport stdio jules \
+  --env JULES_API_KEY=your-key-here \
+  -- node /absolute/path/to/jules-mcp-server/dist/index.js
+```
+
+### Codex (stdio)
+
+Add this entry to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.jules]
+command = "node"
+args = ["/absolute/path/to/jules-mcp-server/dist/index.js"]
+env = { JULES_API_KEY = "your-key-here" }
+```
+
+The server currently supports local stdio transport, including legacy and current MCP protocol negotiation. ChatGPT/OpenAI-hosted MCP connections need a reachable HTTP endpoint or an applicable supported private/local connection mechanism; this project does not implement HTTP transport.
+
 ## Connecting Repositories to Jules
 
 **Before using the MCP server**, connect GitHub repositories through Jules:
@@ -252,7 +275,7 @@ Ask Claude:
 
 ## Troubleshooting Installation
 
-### "Cannot find module '@modelcontextprotocol/sdk'"
+### "Cannot find module '@modelcontextprotocol/server'"
 
 **Cause:** Dependencies not installed
 

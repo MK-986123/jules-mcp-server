@@ -19,6 +19,15 @@ describe("CronEngine", () => {
   beforeEach(() => {
     storage = new ScheduleStorage();
     client = new JulesClient();
+    vi.mocked(client.getSource).mockResolvedValue({
+      name: "sources/github-myorg-myrepo",
+      githubRepo: {
+        owner: "owner",
+        repo: "repo",
+        htmlUrl: "https://github.com/owner/repo",
+        defaultBranch: { displayName: "develop" },
+      },
+    });
     mockLogger = vi.fn();
     engine = new CronEngine(
       storage,
@@ -153,7 +162,7 @@ describe("CronEngine", () => {
       expect(client.createSession).toHaveBeenCalledWith({
         prompt: "test run",
         sourceContext: {
-          source: "sources/github/owner/repo",
+          source: "sources/github-myorg-myrepo",
           githubRepoContext: { startingBranch: "main" },
         },
         automationMode: "AUTO_CREATE_PR",
@@ -189,7 +198,7 @@ describe("CronEngine", () => {
 
       engine.scheduleTask(task);
 
-      // Setup mock to throw error all 3 times to exhaust retries
+      // Session creation is not retried after an ambiguous write outcome.
       vi.mocked(client.createSession).mockRejectedValue(new Error("API Down"));
 
       if (executedCallback) {
@@ -204,8 +213,9 @@ describe("CronEngine", () => {
       );
 
       expect(mockLogger).toHaveBeenCalledWith(
-        expect.stringContaining('failed after 3 retries: API Down')
+        expect.stringContaining('failed: API Down')
       );
+      expect(client.createSession).toHaveBeenCalledTimes(1);
     });
   });
 

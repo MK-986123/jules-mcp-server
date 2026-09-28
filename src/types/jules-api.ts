@@ -75,7 +75,6 @@ export type AutomationMode =
  * - `IN_PROGRESS`: Session is in progress.
  * - `COMPLETED`: Session has completed.
  * - `FAILED`: Session has failed.
- * - `CANCELED`: Session was canceled.
  */
 export type KnownSessionState =
   | 'SESSION_STATE_UNSPECIFIED'

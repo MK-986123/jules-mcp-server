@@ -19,7 +19,7 @@ This package provides a native Activepieces piece for the Google Jules API (`v1a
 | **API Key** | Your Jules API key (`X-Goog-Api-Key`). Generate one at [jules.google/settings](https://jules.google/settings). |
 | **Default Repository** | *(Optional)* Default GitHub repo in `owner/repo` format, used when no repo is specified in a step. |
 
-### Actions (5)
+### Actions (6)
 
 | Action | Description |
 |---|---|
@@ -27,13 +27,14 @@ This package provides a native Activepieces piece for the Google Jules API (`v1a
 | **Get Session Status** | Retrieve the current state of a session, including convenience booleans (`isComplete`, `isFailed`, `isWaitingApproval`) and the PR URL. |
 | **Approve Session Plan** | Approve a plan for sessions created with `requirePlanApproval: true`. |
 | **Send Message to Session** | Send feedback or additional instructions to an active session. |
-| **List Session Activities** | Retrieve the full event log for a session — plan generation, progress updates, messages, and completion events. |
+| **List Session Activities** | Retrieve a bounded page of current activities and its pagination cursor. |
+| **List Sources** | Discover Jules sources and use their exact opaque resource names when creating sessions. |
 
 ### Triggers (1)
 
 | Trigger | Strategy | Description |
 |---|---|---|
-| **Session Completed** | Polling | Fires when a session reaches a terminal state (`COMPLETED`, `FAILED`, or `CANCELED`). Configurable state filters. Uses time-based deduplication. |
+| **Session Completed** | Polling | Fires when a session reaches a terminal state (`COMPLETED` or `FAILED`). Configurable state filters. Uses time-based deduplication. |
 
 ## Project Structure
 
@@ -69,6 +70,7 @@ This piece wraps the following Jules API endpoints:
 | `/v1alpha/sessions/{id}:approvePlan` | `POST` | `approve_plan` |
 | `/v1alpha/sessions/{id}:sendMessage` | `POST` | `send_message` |
 | `/v1alpha/sessions/{id}/activities` | `GET` | `list_activities` |
+| `/v1alpha/sources` | `GET` | `list_sources` |
 
 **Base URL:** `https://jules.googleapis.com/v1alpha`
 **Auth:** API Key via `X-Goog-Api-Key` header
@@ -157,7 +159,8 @@ Jules sessions progress through these states:
 | `PAUSED` | Session is paused |
 | `COMPLETED` | ✅ Task finished — check `outputs` for PR URL |
 | `FAILED` | ❌ Task failed |
-| `CANCELED` | Session was canceled |
+
+States can be extended while the Jules API is v1alpha. Activities use `createTime`, `originator`, `description`, event-specific payloads, and optional `artifacts[].changeSet.gitPatch`. Empty successful approval/message POST responses are followed by a session GET to return current state. Jules source names are opaque; discover them with `list_sources` and reuse the exact returned name. When no branch is supplied, the action resolves `githubRepo.defaultBranch.displayName`.
 
 ## Security
 
@@ -168,7 +171,7 @@ Jules sessions progress through these states:
 
 ## Relationship to jules-mcp-server
 
-This piece is part of the [`jules-mcp-server`](../../README.md) project, which provides a Model Context Protocol (MCP) server for the Jules API. The piece and the MCP server share the same API surface but serve different purposes:
+This piece is part of the [`jules-mcp-server`](../../README.md) project, which provides a Model Context Protocol (MCP) server for selected Jules API workflows. Both integrations target the Jules v1alpha REST contract but expose client-specific surfaces:
 
 | | MCP Server | Activepieces Piece |
 |---|---|---|

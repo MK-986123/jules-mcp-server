@@ -16,14 +16,14 @@ import { listSessions, type Session } from '../api';
  * Polling trigger definition for terminal session states.
  * 
  * Monitors Jules sessions and fires whenever a session reaches a target state 
- * (COMPLETED, FAILED, or CANCELED) after the last polling cycle.
+ * (COMPLETED or FAILED) after the last polling cycle.
  */
 export const sessionCompletedTrigger = createTrigger({
   auth: julesAuth,
   name: 'session_completed',
   displayName: 'Session Completed',
   description:
-    'Triggers when a Jules coding session finishes (completed, failed, or canceled).',
+    'Triggers when a Jules coding session finishes (completed or failed).',
   type: TriggerStrategy.POLLING,
   props: {
     includeStates: Property.StaticMultiSelectDropdown({
@@ -34,7 +34,6 @@ export const sessionCompletedTrigger = createTrigger({
         options: [
           { label: 'Completed', value: 'COMPLETED' },
           { label: 'Failed', value: 'FAILED' },
-          { label: 'Canceled', value: 'CANCELED' },
         ],
       },
     }),
@@ -89,7 +88,6 @@ export const sessionCompletedTrigger = createTrigger({
     const targetStates = (context.propsValue.includeStates as string[]) ?? [
       'COMPLETED',
       'FAILED',
-      'CANCELED',
     ];
 
     // Fetch recent sessions
@@ -123,7 +121,7 @@ export const sessionCompletedTrigger = createTrigger({
     const { sessions } = await listSessions(typedAuth, 5);
 
     const terminalSessions = sessions.filter((s: Session) =>
-      ['COMPLETED', 'FAILED', 'CANCELED'].includes(s.state ?? '')
+      ['COMPLETED', 'FAILED'].includes(s.state ?? '')
     );
 
     return terminalSessions.slice(0, 3).map((session: Session) => ({

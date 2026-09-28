@@ -8,14 +8,13 @@ The Jules MCP Server implements a **"Thick Server"** architecture that bridges t
 
 ### Layer 1: MCP Protocol Interface
 
-**Technology:** `@modelcontextprotocol/sdk`
+**Technology:** `@modelcontextprotocol/server` v2
 **Transport:** Stdio (standard input/output)
 **Responsibility:** JSON-RPC 2.0 communication with MCP Hosts (Claude Desktop, Cursor, etc.)
 
 #### Key Components
 
-- `Server` class from MCP SDK
-- `StdioServerTransport` for local subprocess communication
+- `McpServer` with the SDK `serveStdio` helper for legacy and modern protocol negotiation
 - Request handlers for resources, tools, and prompts
 
 #### Protocol Flow
@@ -34,7 +33,7 @@ MCP Host → stdin → JSON-RPC Request → Request Handler → Tool/Resource �
 - **Authentication:** Automatic `X-Goog-Api-Key` header injection
 - **Error handling:** Structured error responses with status codes
 - **Type safety:** Full TypeScript interfaces for all endpoints
-- **Retry logic:** Exponential backoff for rate limits (planned)
+- **Retry logic:** Bounded exponential backoff for confirmed rate limits and safe transient reads
 
 #### Endpoints Wrapped
 
@@ -54,7 +53,7 @@ MCP Host → stdin → JSON-RPC Request → Request Handler → Tool/Resource �
 
 **File:** `src/storage/schedule-store.ts`
 **Technology:** File-based JSON storage
-**Location:** `~/.jules-mcp/schedules.json`
+**Location:** `~/.jules-mcp/schedules.enc` (encrypted; legacy JSON is read for migration)
 
 #### Why File-Based?
 
@@ -686,7 +685,7 @@ User sees real-time progress
 
 ### Why These Specific Versions?
 
-- MCP SDK: Latest stable (1.x) for modern protocol features
+- MCP TypeScript SDK: v2, with legacy and modern stdio protocol support
 - node-schedule: Proven, stable (2.x), widely used
 - Zod: Fastest schema validation library, excellent TypeScript integration
 

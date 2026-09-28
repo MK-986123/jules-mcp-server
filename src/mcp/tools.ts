@@ -5,11 +5,11 @@
 
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import type { JulesClient } from '../api/jules-client.js';
+import { JulesAPIError, type JulesClient } from '../api/jules-client.js';
 import type { ScheduleStorage } from '../storage/schedule-store.js';
 import { CronEngine } from '../scheduler/cron-engine.js';
 import type { ScheduledTask } from '../types/schedule.js';
-import type { Session, SessionState } from '../types/jules-api.js';
+import type { Activity, Session, SessionState } from '../types/jules-api.js';
 import { RepositoryValidator, smartTruncate, containsSecret, RateLimitError, SecurityError, RateLimiter } from '../utils/security.js';
 
 // Input validation schemas
@@ -71,6 +71,19 @@ export const ManageSessionSchema = z.object({
     .refine((val) => !containsSecret(val), 'Message contains potential secrets. Please remove them.')
     .optional()
     .describe('Message content (required for send_message action)'),
+});
+
+export const ApprovePlanSchema = z.object({
+  session_id: z.string().regex(/^[\w-]+$/, 'Session ID contains invalid characters'),
+});
+
+export const SendSessionMessageSchema = z.object({
+  session_id: z.string().regex(/^[\w-]+$/, 'Session ID contains invalid characters'),
+  message: z
+    .string()
+    .min(1, 'Message cannot be empty')
+    .max(5000, 'Message must not exceed 5,000 characters')
+    .refine((value) => !containsSecret(value), 'Message contains potential secrets. Please remove them.'),
 });
 
 export const CreateRepolessTaskSchema = z.object({
@@ -210,6 +223,21 @@ export const GetSourceDetailsSchema = z.object({
     .describe('Exact source resource name returned by Jules'),
 });
 
+export const ListSourcesSchema = z.object({
+  page_size: z.number().min(1).max(100).default(100),
+  page_token: z.string().optional(),
+});
+
+export const GetSessionActivitiesSchema = z.object({
+  session_id: z.string().regex(/^[\w-]+$/, 'Session ID contains invalid characters'),
+  page_size: z.number().min(1).max(100).default(100),
+  page_token: z.string().optional(),
+});
+
+export const GetSessionDiffSchema = z.object({
+  session_id: z.string().regex(/^[\w-]+$/, 'Session ID contains invalid characters'),
+});
+
 /**
  * Manages the available tools for the Jules MCP server.
  */
@@ -299,6 +327,16 @@ export class JulesTools {
       const errorMsg = isPassthrough && error instanceof Error
         ? error.message
         : 'An internal error occurred. Please check server logs.';
+
+      if (error instanceof JulesAPIError) {
+        return JSON.stringify({
+          success: false,
+          error: error.message,
+          status: error.statusCode,
+          operation: error.operation,
+          retryable: error.retryable,
+        });
+      }
 
       return JSON.stringify({
         success: false,
@@ -718,6 +756,133 @@ export class JulesTools {
         defaultBranch: source.githubRepo?.defaultBranch?.displayName,
         url: source.githubRepo?.htmlUrl,
         metadata: source.githubRepo,
+      };
+    });
+  }
+
+  /**
+   * Tool: list_sources
+   * Lists Jules sources and exposes a cursor when another page exists.
+   * @param args - Pagination parameters.
+   * @returns A JSON string containing source metadata and pagination state.
+   */
+  async listSources(
+    args: z.infer<typeof ListSourcesSchema>
+  ): Promise<string> {
+    return this.executeWithErrorHandling(async () => {
+      const response = await this.client.listSources(
+        args.page_size,
+        args.page_token
+      );
+      return {
+        count: response.sources.length,
+        complete: !response.nextPageToken,
+        nextPageToken: response.nextPageToken,
+        sources: response.sources.map((source) => ({
+          name: source.name,
+          repository: source.githubRepo
+            ? `${source.githubRepo.owner}/${source.githubRepo.repo}`
+            : undefined,
+          defaultBranch: source.githubRepo?.defaultBranch?.displayName,
+          branches: source.githubRepo?.branches?.map((branch) => branch.displayName),
+          isPrivate: source.githubRepo?.isPrivate,
+          url: source.githubRepo?.htmlUrl,
+        })),
+      };
+    });
+  }
+
+  /**
+   * Tool: get_session_activities
+   * Retrieves one bounded activity page and its continuation cursor.
+   * @param args - Session and pagination parameters.
+   * @returns A JSON string containing current Jules activity records.
+   */
+  async getSessionActivities(
+    args: z.infer<typeof GetSessionActivitiesSchema>
+  ): Promise<string> {
+    return this.executeWithErrorHandling(async () => {
+      const response = await this.client.listActivities(
+        args.session_id,
+        args.page_size,
+        args.page_token
+      );
+      return {
+        sessionId: args.session_id,
+        count: response.activities.length,
+        complete: !response.nextPageToken,
+        nextPageToken: response.nextPageToken,
+        activities: response.activities,
+      };
+    });
+  }
+
+  /**
+   * Tool: get_session_diff
+   * Finds the latest patch artifact across bounded activity pages.
+   * @param args - The session identifier.
+   * @returns A JSON string containing patch metadata and the source name.
+   */
+  async getSessionDiff(
+    args: z.infer<typeof GetSessionDiffSchema>
+  ): Promise<string> {
+    return this.executeWithErrorHandling(async () => {
+      const activities: Activity[] = [];
+      let pageToken: string | undefined;
+      let nextPageToken: string | undefined;
+      let complete = false;
+      for (let page = 0; page < 100; page += 1) {
+        const response = await this.client.listActivities(
+          args.session_id,
+          100,
+          pageToken
+        );
+        activities.push(...response.activities);
+        nextPageToken = response.nextPageToken;
+        if (!nextPageToken) {
+          complete = true;
+          break;
+        }
+        pageToken = nextPageToken;
+      }
+
+      const patches = activities.flatMap((activity) =>
+        (activity.artifacts || []).flatMap((artifact) => {
+          const gitPatch = artifact.changeSet?.gitPatch;
+          return gitPatch
+            ? [{ activity, gitPatch, timestamp: Date.parse(activity.createTime || '') }]
+            : [];
+        })
+      );
+      patches.sort((left, right) => {
+        const leftTime = Number.isFinite(left.timestamp)
+          ? left.timestamp
+          : Number.NEGATIVE_INFINITY;
+        const rightTime = Number.isFinite(right.timestamp)
+          ? right.timestamp
+          : Number.NEGATIVE_INFINITY;
+        return leftTime - rightTime;
+      });
+      const latest = patches.at(-1);
+      const session = await this.client.getSession(args.session_id);
+      if (!latest) {
+        return {
+          sessionId: args.session_id,
+          complete,
+          nextPageToken: complete ? undefined : nextPageToken,
+          message: 'No gitPatch artifact is available in the activities read so far.',
+        };
+      }
+      return {
+        sessionId: args.session_id,
+        source: session.sourceContext?.source,
+        activityName: latest.activity.name,
+        createTime: latest.activity.createTime,
+        baseCommitId: latest.gitPatch.baseCommitId,
+        unidiffPatch: latest.gitPatch.unidiffPatch,
+        suggestedCommitMessage: latest.gitPatch.suggestedCommitMessage,
+        complete,
+        nextPageToken: complete ? undefined : nextPageToken,
       };
     });
   }

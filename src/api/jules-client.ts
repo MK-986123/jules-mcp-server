@@ -26,7 +26,9 @@ export class JulesAPIError extends Error {
   constructor(
     message: string,
     public statusCode?: number,
-    public response?: unknown
+    public response?: unknown,
+    public operation?: string,
+    public retryable = false
   ) {
     super(message);
     this.name = 'JulesAPIError';
@@ -98,6 +100,41 @@ export class JulesClient {
   }
 
   /**
+   * Extracts and sanitizes a bounded API error message.
+   * @param body - Raw response text.
+   * @returns A redacted error detail suitable for agent output.
+   */
+  private sanitizeErrorBody(body: string): string {
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as {
+        message?: unknown;
+        error?: { message?: unknown } | string;
+      };
+      if (typeof parsed.message === 'string') {
+        detail = parsed.message;
+      } else if (typeof parsed.error === 'string') {
+        detail = parsed.error;
+      } else if (
+        parsed.error &&
+        typeof parsed.error === 'object' &&
+        typeof parsed.error.message === 'string'
+      ) {
+        detail = parsed.error.message;
+      }
+    } catch {
+      // Plain-text Jules errors are still useful after redaction and truncation.
+    }
+
+    const sanitized = detail
+      .replaceAll(this.apiKey, '[REDACTED]')
+      .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED]');
+    return sanitized.length > 500
+      ? `${sanitized.slice(0, 500)}... [truncated]`
+      : sanitized;
+  }
+
+  /**
    * Generic HTTP request handler with authentication and error handling.
    * @param endpoint - The API endpoint to call (relative to the base URL).
    * @param options - The fetch options (method, headers, body, etc.).
@@ -139,12 +176,7 @@ export class JulesClient {
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-          const rawErrorBody = await response.text();
-          // SECURE: Truncate error body to prevent log flooding or PII leakage
-          const errorBody =
-            rawErrorBody.length > 500
-              ? rawErrorBody.substring(0, 500) + '... [truncated]'
-              : rawErrorBody;
+          const errorBody = this.sanitizeErrorBody(await response.text());
 
           // Retry safe requests on transient errors and any request rejected with 429.
           if (
@@ -158,16 +190,20 @@ export class JulesClient {
             );
             attempt++;
             lastError = new JulesAPIError(
-              `Jules API error: ${response.statusText}`,
+              `Jules API ${method} request failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`,
               response.status,
-              errorBody
+              errorBody,
+              `${method} ${endpoint}`,
+              true
             );
             continue;
           }
           throw new JulesAPIError(
-            `Jules API error: ${response.statusText}`,
+            `Jules API ${method} request failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`,
             response.status,
-            errorBody
+            errorBody,
+            `${method} ${endpoint}`,
+            response.status === 429 || response.status >= 500
           );
         }
 
@@ -192,7 +228,11 @@ export class JulesClient {
           continue;
         }
         throw new JulesAPIError(
-          `Network error: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `Network error: ${(error instanceof Error ? error.message : 'Unknown error').replaceAll(this.apiKey, '[REDACTED]')}`,
+          undefined,
+          undefined,
+          `${method} ${endpoint}`,
+          mayRetryNetwork
         );
       }
     }
@@ -201,7 +241,11 @@ export class JulesClient {
     throw new JulesAPIError(
       `Network error after ${this.maxRetries + 1} attempts: ${
         lastError instanceof Error ? lastError.message : 'Unknown error'
-      }`
+      }`.replaceAll(this.apiKey, '[REDACTED]'),
+      undefined,
+      undefined,
+      `${method} ${endpoint}`,
+      true
     );
   }
 
@@ -240,12 +284,7 @@ export class JulesClient {
         const response = await fetch(url, { ...options, headers, signal: controller.signal });
         clearTimeout(timeoutId);
         if (!response.ok) {
-          const rawErrorBody = await response.text();
-          // SECURE: Truncate error body to prevent log flooding or PII leakage
-          const errorBody =
-            rawErrorBody.length > 500
-              ? rawErrorBody.substring(0, 500) + '... [truncated]'
-              : rawErrorBody;
+          const errorBody = this.sanitizeErrorBody(await response.text());
 
           // A confirmed 429 may be retried; ambiguous writes are never replayed.
           if (
@@ -259,16 +298,20 @@ export class JulesClient {
             );
             attempt++;
             lastError = new JulesAPIError(
-              `Jules API error: ${response.statusText}`,
+              `Jules API ${method} request failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`,
               response.status,
-              errorBody
+              errorBody,
+              `${method} ${endpoint}`,
+              true
             );
             continue;
           }
           throw new JulesAPIError(
-            `Jules API error: ${response.statusText}`,
+            `Jules API ${method} request failed with HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`,
             response.status,
-            errorBody
+            errorBody,
+            `${method} ${endpoint}`,
+            response.status === 429 || response.status >= 500
           );
         }
         // Successful mutation endpoints may return no content; callers must not
@@ -293,7 +336,11 @@ export class JulesClient {
           continue;
         }
         throw new JulesAPIError(
-          `Network error: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `Network error: ${(error instanceof Error ? error.message : 'Unknown error').replaceAll(this.apiKey, '[REDACTED]')}`,
+          undefined,
+          undefined,
+          `${method} ${endpoint}`,
+          mayRetryNetwork
         );
       }
     }
@@ -302,7 +349,11 @@ export class JulesClient {
     throw new JulesAPIError(
       `Network error after ${this.maxRetries + 1} attempts: ${
         lastError instanceof Error ? lastError.message : 'Unknown error'
-      }`
+      }`.replaceAll(this.apiKey, '[REDACTED]'),
+      undefined,
+      undefined,
+      `${method} ${endpoint}`,
+      true
     );
   }
 

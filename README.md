@@ -2,10 +2,10 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org/)
-[![MCP](https://img.shields.io/badge/MCP-1.0.4-purple)](https://modelcontextprotocol.io/)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-green)](https://nodejs.org/)
+[![MCP](https://img.shields.io/badge/MCP-TypeScript%20SDK%20v2-purple)](https://modelcontextprotocol.io/)
 
-A production-ready **Model Context Protocol (MCP)** server for the Google Jules API, enabling autonomous coding tasks and scheduling directly from AI assistants like Claude.
+A community **Model Context Protocol (MCP)** server for the Google Jules API, enabling coding tasks and local recurring schedules from MCP clients. Jules remains a v1alpha API; validate behavior against your Jules account before relying on it.
 
 > **⚠️ DISCLAIMER**: This is an **independent, open-source project** and is **NOT officially created, maintained, or endorsed by Google**. This server is a community-driven integration with the public Jules API. Use at your own risk. For official Jules documentation, visit [jules.google](https://jules.google).
 
@@ -37,7 +37,7 @@ Since the Jules API v1alpha is **stateless** (no native scheduling endpoints), t
 
 ### Prerequisites
 
-- **Node.js** 18.0.0 or higher
+- **Node.js** 20.0.0 or higher
 - **npm** 9.0.0 or higher
 - **Jules API Key** - Generate at [jules.google/settings](https://jules.google/settings)
 - **GitHub Repositories** - Ensure your repositories are connected to Jules and the GitHub app is installed.
@@ -61,23 +61,23 @@ npm run lint
 npm run typecheck
 npm run test
 
-# 5. Build the project and run a smoke test to verify connectivity
+# 5. Build the project and smoke-test legacy and current MCP stdio protocol support
 npm run mcp:smoke
 ```
 
 ### Quick smoke test (MCP stdio)
 
-After building and setting `JULES_API_KEY`, you can validate the server end-to-end:
+After building, this test verifies stdio initialization, MCP discovery, resources, templates, tool metadata, and a local read-only tool call. It does not create a Jules session or call the Jules API.
 
 ```bash
 npm run mcp:smoke
 ```
 
-Expected output (with a valid key):
+The smoke test:
 
-- Lists 11 tools, 5 prompts, and the 4 core resources
-- Attempts to read a fake session ID and reports a Jules 404 (proves real API calls work)
-- Attempts a tool call with dummy data and reports the API error without crashing
+- Lists tools and prompts through both modern and legacy protocol handshakes
+- Confirms session resources are advertised as templates, not fixed URIs
+- Calls a local read-only schedule tool without requiring a live Jules API key
 
 ### Global Installation (Recommended)
 
@@ -159,6 +159,29 @@ For Cursor or VS Code with MCP support:
 }
 ```
 
+### Claude Code (stdio)
+
+Build the project, then add the server to Claude Code:
+
+```bash
+claude mcp add --transport stdio jules \
+  --env JULES_API_KEY=your-key-here \
+  -- node /absolute/path/to/jules-mcp-server/dist/index.js
+```
+
+### Codex (stdio)
+
+Add an entry to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.jules]
+command = "node"
+args = ["/absolute/path/to/jules-mcp-server/dist/index.js"]
+env = { JULES_API_KEY = "your-key-here" }
+```
+
+Stdio is the supported local transport. ChatGPT/OpenAI-hosted MCP connections require a reachable HTTP MCP endpoint or an applicable supported private/local connection mechanism; this project does not currently implement HTTP transport.
+
 ## Usage
 
 Once configured, your AI assistant can use Jules through natural language:
@@ -195,7 +218,7 @@ The assistant will:
 
 The assistant will:
 
-1. Call `get_session_status` or read `jules://sessions/abc123/full`
+1. Call `get_session` or read `jules://sessions/abc123/full`
 2. Show current state (PLANNING, IN_PROGRESS, COMPLETED, etc.)
 3. Provide next steps based on state
 
@@ -209,7 +232,7 @@ The assistant will:
 
 1. Read `jules://sessions/abc123/full` to get the plan
 2. Display the plan steps to you
-3. Call `manage_session` with `action=approve_plan` after your confirmation
+3. Call `approve_plan` after your confirmation
 
 ## Migration Guide
 
@@ -284,7 +307,7 @@ export JULES_API_KEY="your-key-here"
 
 1. Check `jules://sources` resource to see connected repos
 2. Ensure the GitHub app is installed on the repository
-3. Use the exact resource name format: `sources/github/owner/repo`
+3. Discover the source with `list_sources` or `jules://sources` and pass its exact Jules `name` unchanged. Source names are opaque.
 
 ### Schedules not persisting
 
@@ -343,18 +366,19 @@ npm run typecheck  # Type checking only
 
 ## API Endpoints Covered
 
-This server provides complete coverage of the Jules v1alpha API:
+This server uses selected Jules v1alpha REST operations; it does not claim complete API coverage. Current source/activity/session shapes should be checked against Google's API reference:
 
 | Endpoint | Method | MCP Mapping |
 | ---------- | -------- | ------------- |
-| `/sources` | GET | Resource: `jules://sources` |
-| `/sources/{name}` | GET | Included in full session resource |
-| `/sessions` | POST | Tool: `create_coding_task` |
-| `/sessions` | GET | Resource: `jules://sessions/list` |
-| `/sessions/{id}` | GET | Tool: `get_session_status` |
-| `/sessions/{id}:approvePlan` | POST | Tool: `manage_session` (approve_plan) |
-| `/sessions/{id}:sendMessage` | POST | Tool: `manage_session` (send_message) |
-| `/sessions/{id}/activities` | GET | Resource: `jules://sessions/{id}/full` |
+| `/sources` | GET | `list_sources`, `jules://sources` |
+| `/sources/{name}` | GET | `get_source_details`; source `name` is opaque |
+| `/sessions` | GET, POST | Session list resource and task creation tools |
+| `/sessions/{id}` | GET, DELETE | `get_session`, `delete_session` |
+| `/sessions/{id}:approvePlan` | POST | `approve_plan` |
+| `/sessions/{id}:sendMessage` | POST | `send_session_message` |
+| `/sessions/{id}/activities` | GET | Activity tool and session resource templates |
+
+Activities use `createTime`, `originator`, `description`, event payloads, and `artifacts[].changeSet.gitPatch`. Session states include user-action states such as `AWAITING_PLAN_APPROVAL`, `AWAITING_USER_FEEDBACK`, and `PAUSED`; unknown alpha states are preserved. The tool surface and resources are intentionally bounded and may expose pagination cursors.
 
 ### Additional Capabilities (Beyond API)
 

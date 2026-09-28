@@ -10,7 +10,7 @@
 export interface TaskPayload {
   /** The natural language instruction for Jules */
   prompt: string;
-  /** Repository resource name (sources/github/owner/repo) */
+  /** Opaque Jules source resource name returned by sources.list. */
   source: string;
   /** Target branch (defaults to main) */
   branch?: string;

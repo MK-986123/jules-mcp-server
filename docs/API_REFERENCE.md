@@ -1,6 +1,6 @@
 # Jules MCP Server API Reference
 
-Complete reference for all Resources, Tools, and Prompts exposed by this MCP server.
+Reference for the Jules resources, tools, and prompts currently exposed by this MCP server. The Jules API is v1alpha; this server does not claim complete API coverage.
 
 ## Resources
 
@@ -20,7 +20,7 @@ Resources are read-only data that provide context to the AI assistant.
   "count": 2,
   "sources": [
     {
-      "name": "sources/github/owner/repo",
+      "name": "sources/github-owner-repo",
       "repository": "owner/repo",
       "defaultBranch": "main",
       "url": "https://github.com/owner/repo"
@@ -30,6 +30,23 @@ Resources are read-only data that provide context to the AI assistant.
 ```
 
 **Usage:** Read this before creating tasks to ensure the repository is connected.
+`name` is an opaque Jules resource name. Copy it exactly from this response; do not construct it from the repository owner/name. The resource projects `githubRepo.defaultBranch.displayName` as the string `defaultBranch`. In the Jules API response, `githubRepo.defaultBranch` is an object, and `branches`, `isPrivate`, `owner`, `repo`, and `htmlUrl` may also be present.
+
+The Jules `Source` object contains a `name` such as `sources/github-myorg-myrepo` and `githubRepo` metadata. That example is illustrative, not a required naming pattern.
+
+```json
+{
+  "name": "sources/github-myorg-myrepo",
+  "githubRepo": {
+    "owner": "myorg",
+    "repo": "myrepo",
+    "htmlUrl": "https://github.com/myorg/myrepo",
+    "defaultBranch": { "displayName": "main" },
+    "branches": [{ "displayName": "main" }, { "displayName": "release" }],
+    "isPrivate": true
+  }
+}
+```
 
 ---
 
@@ -51,7 +68,7 @@ Resources are read-only data that provide context to the AI assistant.
       "title": "Add API tests",
       "state": "COMPLETED",
       "prompt": "Add comprehensive API tests...",
-      "repository": "sources/github/owner/repo",
+      "repository": "sources/github-owner-repo",
       "created": "2025-01-15T10:00:00Z"
     }
   ]
@@ -59,6 +76,18 @@ Resources are read-only data that provide context to the AI assistant.
 ```
 
 **Usage:** Monitor active tasks or check historical sessions.
+
+---
+
+### Session resource templates
+
+The parameterized session resources are registered as templates, not as concrete resource URIs:
+
+- `jules://sessions/{id}/activities`
+- `jules://sessions/{id}/full`
+- `jules://sessions/{id}/diff`
+
+Use the session ID in the requested URI. Activity and full-session results are bounded and include continuation information where applicable.
 
 ---
 
@@ -78,21 +107,25 @@ Resources are read-only data that provide context to the AI assistant.
   "count": 3,
   "activities": [
     {
-      "type": "PLAN_GENERATED",
-      "timestamp": "2025-01-15T10:04:00Z",
-      "planGenerated": { ... }
+      "name": "sessions/abc123/activities/activity-1",
+      "createTime": "2025-01-15T10:04:00Z",
+      "originator": "agent",
+      "description": "Plan generated",
+      "planGenerated": { "plan": { "steps": [] } },
+      "artifacts": []
     }
-  ]
+  ],
+  "nextPageToken": "opaque-page-cursor"
 }
 ```
 
-**Usage:** Audit detailed internal events of a session.
+Activity pages are bounded. Use `nextPageToken` to request later pages; do not treat the first page as complete history. Activity records use `createTime`, `originator`, `description`, an event payload (for example `planGenerated`, `planApproved`, `userMessaged`, `agentMessaged`, `progressUpdated`, `sessionCompleted`, or `sessionFailed`), and optional `artifacts`. Change-set patches are nested at `artifacts[].changeSet.gitPatch` and can include `baseCommitId`, `unidiffPatch`, and `suggestedCommitMessage`.
 
 ---
 
 ### jules://sessions/{id}/full
 
-**Description:** Complete session details including plan and activities
+**Description:** Session details and a bounded activity page including plan and progress context
 
 **URI Pattern:** `jules://sessions/{sessionId}/full`
 
@@ -107,7 +140,7 @@ Resources are read-only data that provide context to the AI assistant.
     "title": "Fix auth bug",
     "state": "AWAITING_PLAN_APPROVAL",
     "prompt": "Fix the authentication timeout issue...",
-    "repository": "sources/github/owner/backend",
+    "repository": "sources/github-owner-backend",
     "branch": "main",
     "automationMode": "AUTO_CREATE_PR",
     "requirePlanApproval": true,
@@ -116,22 +149,28 @@ Resources are read-only data that provide context to the AI assistant.
   },
   "activities": [
     {
-      "type": "PLAN_GENERATED",
-      "timestamp": "2025-01-15T10:04:00Z",
-      "plan": "1. Analyze session timeout configuration...",
-      "changesPreview": "3 files"
+      "name": "sessions/abc123/activities/activity-1",
+      "createTime": "2025-01-15T10:04:00Z",
+      "originator": "agent",
+      "description": "Plan generated",
+      "planGenerated": { "plan": { "steps": ["Analyze configuration"] } },
+      "artifacts": []
     },
     {
-      "type": "PROGRESS_UPDATED",
-      "timestamp": "2025-01-15T10:05:00Z",
-      "message": "Awaiting plan approval",
-      "percentage": 20
+      "name": "sessions/abc123/activities/activity-2",
+      "createTime": "2025-01-15T10:05:00Z",
+      "originator": "agent",
+      "description": "Awaiting plan approval",
+      "progressUpdated": {},
+      "artifacts": []
     }
-  ]
+  ],
+  "activityCount": 2,
+  "activitiesComplete": true
 }
 ```
 
-**Usage:** Review plans before approval, monitor progress, debug failures.
+The activity fields above reflect the current Jules shape; activity payloads are event-specific. A session may have more activities than fit in the bounded page; check `activitiesComplete` and `nextPageToken`.
 
 ---
 
@@ -141,19 +180,24 @@ Resources are read-only data that provide context to the AI assistant.
 
 **URI Pattern:** `jules://sessions/{sessionId}/diff`
 
-**MIME Type:** `text/plain`
+**MIME Type:** `application/json`
 
 #### Response Format
 
-```text
---- src/api.ts
-+++ src/api.ts
-@@ -10,5 +10,6 @@
-- export const API_URL = "https://jules.googleapis.com/v1alpha";
-+ export const API_URL = process.env.JULES_API_BASE_URL || "https://jules.googleapis.com/v1alpha";
+```json
+{
+  "sessionId": "abc123",
+  "activityName": "sessions/abc123/activities/activity-4",
+  "createTime": "2025-01-15T10:08:00Z",
+  "source": "sources/github-owner-backend",
+  "complete": true,
+  "baseCommitId": "a1b2c3d4",
+  "unidiffPatch": "--- a/src/api.ts\n+++ b/src/api.ts\n@@ ...",
+  "suggestedCommitMessage": "Fix authentication timeout"
+}
 ```
 
-**Usage:** Detailed review of exact code changes proposed by Jules.
+The resource selects the latest available `artifacts[].changeSet.gitPatch` from bounded activity history and returns its `baseCommitId`, `unidiffPatch`, suggested commit message, and source. Check `complete` and `nextPageToken` when history exceeds the page cap.
 
 ---
 
@@ -175,7 +219,7 @@ Resources are read-only data that provide context to the AI assistant.
       "name": "Weekly Deps Update",
       "cron": "0 9 * * 1",
       "enabled": true,
-      "repository": "sources/github/owner/repo",
+      "repository": "sources/github-owner-repo",
       "prompt": "Update all dependencies...",
       "nextRun": "2025-01-20T09:00:00Z",
       "lastRun": "2025-01-13T09:00:00Z",
@@ -229,8 +273,8 @@ Tools are executable functions that perform actions.
 | Parameter | Type | Required | Default | Description |
 | ----------- | ------ | ---------- | --------- | ------------- |
 | `prompt` | string | Yes | - | Natural language task instruction |
-| `source` | string | Yes | - | Repository resource name (sources/github/owner/repo) |
-| `branch` | string | No | "main" | Git branch to base changes on |
+| `source` | string | Yes | - | Exact opaque Jules source name from `list_sources` or `jules://sources` |
+| `branch` | string | No | Jules default branch | Git branch to base changes on; omitted branch is resolved from source metadata |
 | `auto_create_pr` | boolean | No | true | Automatically create Pull Request |
 | `require_plan_approval` | boolean | No | false | Pause for manual plan review |
 | `title` | string | No | - | Optional session title |
@@ -260,7 +304,7 @@ Tools are executable functions that perform actions.
 
 ---
 
-### manage_session
+### manage_session (compatibility tool)
 
 **Description:** Manage active sessions (approve plans, send feedback)
 
@@ -269,7 +313,7 @@ Tools are executable functions that perform actions.
 | Parameter | Type | Required | Description |
 | ----------- | ------ | ---------- | ------------- |
 | `session_id` | string | Yes | Session ID to manage |
-| `action` | enum | Yes | "approve_plan", "reject_plan", or "send_message" |
+| `action` | enum | Yes | "approve_plan" or "send_message" |
 | `message` | string | Conditional | Required if action is "send_message" |
 
 #### Returns
@@ -282,7 +326,13 @@ Tools are executable functions that perform actions.
 }
 ```
 
-**Consequential:** Yes (approve_plan triggers code modification)
+Use `approve_plan` and `send_session_message` for narrowly-scoped operations. Jules has no separate plan-rejection endpoint; use `delete_session` only when the intention is to delete the session.
+
+---
+
+### approve_plan and send_session_message
+
+`approve_plan` takes `session_id` and approves a plan awaiting approval. `send_session_message` takes `session_id` and `message` to provide feedback or reply to Jules. Both are external writes; neither has a separate plan-rejection variant.
 
 ---
 
@@ -304,9 +354,9 @@ Tools are executable functions that perform actions.
   "title": "Fix auth bug",
   "state": "AWAITING_PLAN_APPROVAL",
   "prompt": "Fix the authentication timeout...",
-  "repository": "sources/github/owner/backend",
+  "repository": "sources/github-owner-backend",
   "updated": "2025-01-15T10:05:00Z",
-  "nextSteps": "Plan is ready. Read jules://sessions/abc123/full to review the plan, then call manage_session with action=approve_plan to proceed."
+  "nextSteps": "Plan is ready. Read jules://sessions/abc123/full to review the plan, then call approve_plan to proceed."
 }
 ```
 
@@ -367,7 +417,7 @@ Tools are executable functions that perform actions.
       "name": "Weekly Deps Update",
       "cron": "0 9 * * 1",
       "enabled": true,
-      "repository": "sources/github/owner/repo",
+      "repository": "sources/github-owner-repo",
       "prompt": "Update all dependencies...",
       "nextRun": "2025-01-20T09:00:00Z",
       "lastRun": "2025-01-13T09:00:00Z",
@@ -404,9 +454,26 @@ Tools are executable functions that perform actions.
 
 ---
 
+### wait_for_session
+
+**Description:** Wait a bounded time for a session to reach a target state.
+
+#### Parameters
+
+| Parameter | Type | Required | Default | Description |
+| ----------- | ------ | ---------- | --------- | ------------- |
+| `session_id` | string | Yes | - | Jules session ID |
+| `timeout_seconds` | number | No | 30 | Maximum wait, configurable up to 1800 seconds |
+| `poll_interval_seconds` | number | No | 10 | Polling interval |
+| `target_states` | string[] | No | Terminal and user-action states | States that stop waiting |
+
+The default stop states include `COMPLETED`, `FAILED`, `AWAITING_PLAN_APPROVAL`, `AWAITING_USER_FEEDBACK`, and `PAUSED`. A timeout returns a normal result with the last observed state and `timedOut: true`.
+
+---
+
 ### delete_session
 
-**Description:** Delete or cancel an active Jules session
+**Description:** Delete a Jules session
 
 #### Parameters
 
@@ -419,11 +486,11 @@ Tools are executable functions that perform actions.
 ```json
 {
   "success": true,
-  "message": "Session 'abc123' deleted/canceled successfully"
+  "message": "Session 'abc123' deleted successfully"
 }
 ```
 
-**Consequential:** Yes (stops execution and removes record)
+Jules exposes deletion, not a separate rejection action. The tool does not invent a resulting session state.
 
 ---
 
@@ -435,14 +502,14 @@ Tools are executable functions that perform actions.
 
 | Parameter | Type | Required | Description |
 | ----------- | ------ | ---------- | ------------- |
-| `source_name` | string | Yes | Source resource name (sources/github/owner/repo) |
+| `source_name` | string | Yes | Exact opaque source name returned by Jules |
 
 #### Returns
 
 ```json
 {
   "success": true,
-  "name": "sources/github/owner/repo",
+  "name": "sources/github-owner-repo",
   "repository": "owner/repo",
   "defaultBranch": "main",
   "url": "https://github.com/owner/repo",
@@ -481,7 +548,7 @@ Please create a Jules coding task with a detailed prompt that:
 3. Specifies any patterns or conventions to follow
 4. Includes test requirements
 
-Use the create_coding_task tool with source format: sources/github/myorg/backend
+Discover the repository with `list_sources` or `jules://sources`, then pass its exact returned Jules source name to `create_coding_task`. Do not construct or rewrite source names.
 ```
 
 ---
@@ -509,7 +576,7 @@ Please use the schedule_recurring_task tool with:
 - Cron expression: "0 3 * * 1" (Every Monday at 3 AM)
 - A comprehensive prompt covering all tasks
 - Auto-create PR: true
-- Source: sources/github/myorg/frontend
+- Source: use the exact returned Jules source name; do not construct or rewrite it
 ```
 
 ---
@@ -561,7 +628,7 @@ AWAITING_PLAN_APPROVAL (if required)
   ↓ (after approve_plan)
 IN_PROGRESS (Jules making changes)
   ↓
-COMPLETED or FAILED
+COMPLETED, FAILED, or a future Jules state
 ```
 
 ### State-Specific Actions
@@ -571,6 +638,8 @@ COMPLETED or FAILED
 | `QUEUED` | Wait, no action needed |
 | `PLANNING` | Wait for plan generation |
 | `AWAITING_PLAN_APPROVAL` | Read plan, then approve or send feedback |
+| `AWAITING_USER_FEEDBACK` | Read activities and send the requested feedback |
+| `PAUSED` | Inspect session status and activities for the next required action |
 | `IN_PROGRESS` | Monitor progress via activities |
 | `COMPLETED` | Review PR and merge if satisfactory |
 | `FAILED` | Read activities to diagnose, may need new session |
@@ -650,7 +719,7 @@ Register in `src/index.ts` resource list and handler.
 
 Jules sessions are **asynchronous**. The `create_coding_task` tool returns immediately with a session ID. The actual work happens in the background.
 
-**Implication:** AI assistants must poll for status or use resources to monitor progress. There is no blocking "wait for completion" tool.
+**Implication:** AI assistants can poll with `get_session` or use `wait_for_session`. The wait tool defaults to 30 seconds, returns a structured timeout with the last observed state, and stops by default when Jules needs user input.
 
 ### Polling Best Practices
 
@@ -690,15 +759,17 @@ The API is structured around three primary resource types:
 
 - **Base URL:** `https://jules.googleapis.com/v1alpha`
 - **Authentication:** Uses API keys passed in the `X-Goog-Api-Key` header. Keys are managed at [jules.google.com/settings](https://jules.google.com/settings).
-- **Resource Naming:** Follows standard Google API hierarchical conventions (e.g., `sources/{sourceId}`, `sessions/{sessionId}`, `sessions/{sessionId}/activities/{activityId}`).
+- **Resource Naming:** Session and activity resource names follow the API contract. Source names are opaque values in the `sources/{source}` resource form; use the exact source name returned by Jules.
 
 ### Common API Operations Supported by this Server
 
 | Task | Method | Endpoint |
 | :--- | :--- | :--- |
 | **List Sources** | `GET` | `/v1alpha/sources` |
+| **Get Source** | `GET` | `/v1alpha/sources/{name}` |
 | **Create Session** | `POST` | `/v1alpha/sessions` |
 | **List Sessions** | `GET` | `/v1alpha/sessions` |
+| **Get or Delete Session** | `GET`, `DELETE` | `/v1alpha/sessions/{id}` |
 | **Send Message** | `POST` | `/v1alpha/sessions/{id}:sendMessage` |
 | **Approve Plan** | `POST` | `/v1alpha/sessions/{id}:approvePlan` |
 | **List Activities** | `GET` | `/v1alpha/sessions/{id}/activities` |
@@ -713,8 +784,8 @@ The API is structured around three primary resource types:
 | Component | Version | Notes |
 | ----------- | --------- | ------- |
 | Jules API | v1alpha | Experimental, may change |
-| MCP Protocol | 2025-03-26 | Streamable HTTP spec |
-| Node.js | >=18.0.0 | Required for fetch API |
+| MCP Protocol | 2025-11-25 and 2026-07-28 | Legacy and current stdio negotiation |
+| Node.js | >=20.0.0 | Runtime floor for MCP TypeScript SDK v2 |
 | TypeScript | >=5.0.0 | For strict type checking |
 
 ## Additional Resources

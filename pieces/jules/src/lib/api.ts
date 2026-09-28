@@ -42,10 +42,54 @@ async function request<T>(
 }
 
 /**
+ * Sends a mutation whose success response may have no body.
+ * @param auth - Authentication value containing the API key.
+ * @param endpoint - API endpoint path.
+ * @param body - Optional JSON body for the request.
+ * @returns Promise resolving when Jules accepts the request.
+ */
+async function requestNoContent(
+  auth: JulesAuthValue,
+  endpoint: string,
+  body?: unknown
+): Promise<void> {
+  const response = await httpClient.sendRequest<unknown>({
+    method: HttpMethod.POST,
+    url: `${BASE_URL}${endpoint}`,
+    headers: { 'X-Goog-Api-Key': auth.apiKey },
+    body,
+  });
+  void response;
+}
+
+/** GitHub repository metadata exposed by a Jules source. */
+export interface GitHubRepo {
+  owner: string;
+  repo: string;
+  htmlUrl?: string;
+  defaultBranch?: { displayName: string };
+  branches?: { displayName: string }[];
+  isPrivate?: boolean;
+}
+
+/** Jules source returned by `sources.list`. */
+export interface Source {
+  /** Opaque Jules resource name; use the returned value without rewriting it. */
+  name: string;
+  githubRepo?: GitHubRepo;
+}
+
+/** Result of listing Jules sources. */
+export interface ListSourcesResponse {
+  sources: Source[];
+  nextPageToken?: string;
+}
+
+/**
  * Configuration for a repository source.
  */
 export interface SourceContext {
-  /** The resource name of the source (e.g., "sources/github/owner/repo") */
+  /** Opaque Jules source resource name, returned by `sources.list`. */
   source: string;
   /** Optional GitHub-specific context */
   githubRepoContext?: { 
@@ -72,7 +116,7 @@ export type SessionState =
   | 'PAUSED'
   | 'COMPLETED'
   | 'FAILED'
-  | 'CANCELED';
+  | (string & {});
 
 /**
  * Represents a Jules coding session.
@@ -120,24 +164,27 @@ export interface Session {
 export interface Activity {
   /** Resource name of the activity */
   name: string;
-  /** The type of activity */
-  type: string;
-  /** ISO timestamp when the activity occurred */
-  timestamp?: string;
-  /** Payload for PLAN_GENERATED type */
-  planGenerated?: { plan: string };
-  /** Payload for PROGRESS_UPDATED type */
-  progressUpdated?: { message: string; percentage?: number };
-  /** Payload for SESSION_COMPLETED type */
-  sessionCompleted?: {
-    success: boolean;
-    message?: string;
-    pullRequestUrl?: string;
-  };
-  /** Payload for MESSAGE_SENT type */
-  messageSent?: { prompt: string; sender: string };
-  /** Payload for AGENT_MESSAGED type */
-  agentMessaged?: { message: string };
+  createTime?: string;
+  originator?: string | Record<string, unknown>;
+  description?: string;
+  artifacts?: {
+    changeSet?: {
+      gitPatch?: {
+        baseCommitId?: string;
+        unidiffPatch?: string;
+        suggestedCommitMessage?: string;
+      };
+    };
+    [key: string]: unknown;
+  }[];
+  planGenerated?: Record<string, unknown>;
+  planApproved?: Record<string, unknown>;
+  userMessaged?: Record<string, unknown>;
+  agentMessaged?: Record<string, unknown>;
+  progressUpdated?: Record<string, unknown>;
+  sessionCompleted?: Record<string, unknown>;
+  sessionFailed?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 /**
@@ -161,6 +208,70 @@ export async function createSession(
 }
 
 /**
+ * Lists a page of Jules-connected sources.
+ * @param auth - Authentication value.
+ * @param pageSize - Maximum number of sources in the page.
+ * @param pageToken - Optional token for the next page.
+ * @returns Sources and an optional continuation token.
+ */
+export async function listSources(
+  auth: JulesAuthValue,
+  pageSize = 100,
+  pageToken?: string
+): Promise<ListSourcesResponse> {
+  const params = new URLSearchParams({ pageSize: String(pageSize) });
+  if (pageToken) params.set('pageToken', pageToken);
+  return request(auth, `/sources?${params.toString()}`);
+}
+
+/**
+ * Retrieves a Jules source by its exact resource name.
+ * @param auth - Authentication value.
+ * @param sourceName - Opaque Jules source resource name.
+ * @returns The source metadata.
+ */
+export async function getSource(
+  auth: JulesAuthValue,
+  sourceName: string
+): Promise<Source> {
+  return request(auth, `/${sourceName}`);
+}
+
+/**
+ * Resolves a source name or legacy owner/repository identifier to Jules metadata.
+ * @param auth - Authentication value.
+ * @param sourceIdentifier - Exact Jules name or legacy `owner/repo` value.
+ * @returns The matching source returned by Jules.
+ * @throws Error when no matching connected source is found.
+ */
+export async function resolveSource(
+  auth: JulesAuthValue,
+  sourceIdentifier: string
+): Promise<Source> {
+  if (sourceIdentifier.startsWith('sources/')) {
+    return getSource(auth, sourceIdentifier);
+  }
+
+  const seenTokens = new Set<string>();
+  let pageToken: string | undefined;
+  do {
+    const response = await listSources(auth, 100, pageToken);
+    const match = response.sources.find((source) => {
+      const githubRepo = source.githubRepo;
+      return githubRepo && `${githubRepo.owner}/${githubRepo.repo}` === sourceIdentifier;
+    });
+    if (match) return match;
+    pageToken = response.nextPageToken;
+    if (!pageToken || seenTokens.has(pageToken)) break;
+    seenTokens.add(pageToken);
+  } while (pageToken);
+
+  throw new Error(
+    `No Jules source matches "${sourceIdentifier}". Use the exact source name returned by the list sources action.`
+  );
+}
+
+/**
  * Retrieves the status and details of a specific session.
  * 
  * @param auth - Authentication value.
@@ -171,7 +282,7 @@ export async function getSession(
   auth: JulesAuthValue,
   sessionId: string
 ): Promise<Session> {
-  return request<Session>(auth, `/sessions/${sessionId}`);
+  return request<Session>(auth, `/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 /**
@@ -197,13 +308,18 @@ export async function listSessions(
  * 
  * @param auth - Authentication value.
  * @param sessionId - Unique session identifier.
- * @returns {Promise<Session>} The updated session object.
+ * @returns {Promise<Session>} The session state after approval.
  */
 export async function approvePlan(
   auth: JulesAuthValue,
   sessionId: string
 ): Promise<Session> {
-  return request<Session>(auth, `/sessions/${sessionId}:approvePlan`, HttpMethod.POST, {});
+  await requestNoContent(
+    auth,
+    `/sessions/${encodeURIComponent(sessionId)}:approvePlan`,
+    {}
+  );
+  return getSession(auth, sessionId);
 }
 
 /**
@@ -212,14 +328,19 @@ export async function approvePlan(
  * @param auth - Authentication value.
  * @param sessionId - Unique session identifier.
  * @param prompt - The message content.
- * @returns {Promise<Session>} The updated session object.
+ * @returns {Promise<Session>} The session state after sending.
  */
 export async function sendMessage(
   auth: JulesAuthValue,
   sessionId: string,
   prompt: string
 ): Promise<Session> {
-  return request<Session>(auth, `/sessions/${sessionId}:sendMessage`, HttpMethod.POST, { prompt });
+  await requestNoContent(
+    auth,
+    `/sessions/${encodeURIComponent(sessionId)}:sendMessage`,
+    { prompt }
+  );
+  return getSession(auth, sessionId);
 }
 
 /**
@@ -235,8 +356,9 @@ export async function listActivities(
   sessionId: string,
   pageSize = 50
 ): Promise<{ activities: Activity[]; nextPageToken?: string }> {
+  const params = new URLSearchParams({ pageSize: String(pageSize) });
   return request(
     auth,
-    `/sessions/${sessionId}/activities?pageSize=${pageSize}`
+    `/sessions/${encodeURIComponent(sessionId)}/activities?${params.toString()}`
   );
 }

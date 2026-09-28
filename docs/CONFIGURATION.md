@@ -37,7 +37,7 @@ Comma-separated list of repository names that can be modified through this serve
 export JULES_ALLOWED_REPOS="myorg/frontend,myorg/backend-api"
 ```
 
-**Format:** `owner/repo` (without the `sources/github/` prefix)
+The allowlist remains `owner/repo` values. Authorization compares them with each resolved Jules source's `githubRepo.owner` and `githubRepo.repo`; the opaque Jules source resource name is never parsed.
 
 #### Behavior
 
@@ -62,16 +62,6 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 - If **not set**: `JULES_API_KEY` is used as the default encryption key.
 - **Security Recommendation:** Use a dedicated, random key for schedule encryption to ensure security if you rotate your `JULES_API_KEY`.
-
-#### JULES_DEFAULT_BRANCH
-
-Default git branch for tasks when not specified.
-
-```bash
-export JULES_DEFAULT_BRANCH="develop"
-```
-
-**Default:** `main`
 
 #### LOG_LEVEL
 
@@ -113,7 +103,7 @@ export LOG_LEVEL="debug"
 #### After configuration
 
 1. Restart Claude Desktop
-2. Look for "Jules MCP Server started successfully" in logs
+2. Check that the Jules tools appear in the MCP client
 3. Resources and tools should appear in Claude's MCP panel
 
 ### Cursor IDE
@@ -163,7 +153,7 @@ This file is **AES-256-GCM encrypted** to protect your coding task prompts and m
       "cron": "0 9 * * 1",
       "taskPayload": {
         "prompt": "Update all dependencies...",
-        "source": "sources/github/owner/repo",
+        "source": "sources/github-myorg-myrepo",
         "branch": "main",
         "automationMode": "AUTO_CREATE_PR"
       },
@@ -241,7 +231,7 @@ Regularly review `jules://schedules/history` to audit autonomous executions:
 
 ### 5. Network Security
 
-If running as an HTTP server (instead of stdio):
+This project currently supports stdio only. If you deploy it behind a future HTTP transport:
 
 - Use TLS/HTTPS only
 - Implement authentication (API keys, OAuth)

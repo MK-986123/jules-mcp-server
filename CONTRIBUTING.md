@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Prerequisites
 
-- Node.js 18.0.0 or higher
+- Node.js 20.0.0 or higher
 - npm or yarn
 - Git
 - A Jules API key (for testing)

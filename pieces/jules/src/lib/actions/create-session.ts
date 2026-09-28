@@ -5,7 +5,7 @@
 
 import { createAction, Property } from '@activepieces/pieces-framework';
 import { julesAuth, type JulesAuthValue } from '../auth';
-import { createSession } from '../api';
+import { createSession, resolveSource } from '../api';
 
 /**
  * Action definition for creating a new Jules coding session.
@@ -23,14 +23,13 @@ export const createSessionAction = createAction({
     repository: Property.ShortText({
       displayName: 'Repository',
       description:
-        'GitHub repository in owner/repo format. Leave blank to use the default from auth.',
+        'Exact Jules source name from the list sources action, or a legacy owner/repo value to resolve through Jules.',
       required: false,
     }),
     branch: Property.ShortText({
       displayName: 'Branch',
-      description: 'Branch to base changes on (default: main)',
+      description: 'Optional branch. If blank, Jules source default branch is used.',
       required: false,
-      defaultValue: 'main',
     }),
     prompt: Property.LongText({
       displayName: 'Task Prompt',
@@ -64,19 +63,40 @@ export const createSessionAction = createAction({
    */
   async run({ auth, propsValue }) {
     const typedAuth = auth as JulesAuthValue;
-    const repo = propsValue.repository || typedAuth.defaultRepo;
-    if (!repo) {
+    const sourceIdentifier = propsValue.repository || typedAuth.defaultRepo;
+    if (!sourceIdentifier) {
       throw new Error(
-        'Repository is required. Set it here or in the auth default.'
+        'Repository is required. Set a Jules source name here or a default repository in auth.'
+      );
+    }
+
+    const source = await resolveSource(typedAuth, sourceIdentifier);
+    const defaultBranch = source.githubRepo?.defaultBranch?.displayName;
+    const branch = propsValue.branch || defaultBranch;
+    if (!branch) {
+      throw new Error(
+        `Jules source "${source.name}" has no default branch. Supply a branch explicitly.`
+      );
+    }
+    const branches = source.githubRepo?.branches?.map(
+      (item) => item.displayName
+    );
+    if (
+      propsValue.branch &&
+      branches?.length &&
+      !branches.includes(propsValue.branch)
+    ) {
+      throw new Error(
+        `Branch "${propsValue.branch}" is not available on ${source.githubRepo?.owner}/${source.githubRepo?.repo}. Choose a listed branch or leave the field blank.`
       );
     }
 
     const session = await createSession(typedAuth, {
       prompt: propsValue.prompt,
       sourceContext: {
-        source: `sources/github/${repo}`,
+        source: source.name,
         githubRepoContext: {
-          startingBranch: propsValue.branch || 'main',
+          startingBranch: branch,
         },
       },
       title: propsValue.title || propsValue.prompt.substring(0, 100),

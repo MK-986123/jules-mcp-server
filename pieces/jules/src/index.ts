@@ -2,7 +2,7 @@
  * Google Jules — Activepieces Piece
  *
  * Integrates Google Jules (AI coding agent) into Activepieces automation flows.
- * Provides 5 actions and 1 polling trigger for full session lifecycle management.
+ * Provides 6 actions and 1 polling trigger for full session lifecycle management.
  *
  * Actions:
  *   - create_session   — Dispatch a coding task to Jules
@@ -10,6 +10,7 @@
  *   - approve_plan     — Approve a pending plan
  *   - send_message     — Send feedback to an active session
  *   - list_activities  — View the session event log
+ *   - list_sources     — Discover exact Jules source resource names
  *
  * Triggers:
  *   - session_completed — Fires when a session reaches a terminal state
@@ -24,6 +25,7 @@ import { getSessionAction } from './lib/actions/get-session';
 import { approvePlanAction } from './lib/actions/approve-plan';
 import { sendMessageAction } from './lib/actions/send-message';
 import { listActivitiesAction } from './lib/actions/list-activities';
+import { listSourcesAction } from './lib/actions/list-sources';
 
 // Triggers
 import { sessionCompletedTrigger } from './lib/triggers/session-completed';
@@ -41,6 +43,7 @@ export const jules = createPiece({
     approvePlanAction,
     sendMessageAction,
     listActivitiesAction,
+    listSourcesAction,
   ],
   triggers: [sessionCompletedTrigger],
   authors: ['savethepolarbears'],

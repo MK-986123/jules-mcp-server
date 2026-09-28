@@ -35,7 +35,7 @@ export const JULES_PROMPTS: PromptTemplate[] = [
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
       {
@@ -61,7 +61,7 @@ Please create a Jules coding task with a detailed prompt that:
 4. Includes test requirements to verify the refactoring doesn't break functionality
 
 Use the create_coding_task tool with:
-- Source format: sources/github/${args.repository}
+- Source: ${args.repository} (copy the exact name returned by list_sources; do not rewrite it)
 - require_plan_approval: true (Important for safe operation when targeting repos from AI agents like OpenClaw/Codex)
 - auto_create_pr: true`,
   },
@@ -73,7 +73,7 @@ Use the create_coding_task tool with:
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
       {
@@ -93,7 +93,7 @@ Please use the schedule_recurring_task tool with:
 - A comprehensive prompt covering all tasks
 - auto_create_pr: true
 - require_plan_approval: true (Recommended for safe AI integration until trust is established)
-- Source: sources/github/${args.repository}
+- Source: ${args.repository} (copy the exact name returned by list_sources; do not rewrite it)
 
 This will create a persistent schedule that survives server restarts.`,
   },
@@ -105,7 +105,7 @@ This will create a persistent schedule that survives server restarts.`,
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
     ],
@@ -120,7 +120,7 @@ Please create a Jules task that:
 6. Checks for OWASP Top 10 vulnerabilities
 
 Use create_coding_task with:
-- Source: sources/github/${args.repository}
+- Source: ${args.repository} (copy the exact name returned by list_sources; do not rewrite it)
 - require_plan_approval: true (Crucial for safe operation when targeting repos from AI agents like OpenClaw/Codex)
 - auto_create_pr: true
 - Detailed prompt including all security checks
@@ -134,7 +134,7 @@ You may want to schedule this monthly using schedule_recurring_task with cron "0
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
       {
@@ -158,7 +158,7 @@ Please create a Jules task with this prompt:
 Provide a summary of all fixes made."
 
 Use create_coding_task with:
-- Source: sources/github/${args.repository}
+- Source: ${args.repository} (copy the exact name returned by list_sources; do not rewrite it)
 - require_plan_approval: true (For safe AI agent integration)
 - auto_create_pr: true`,
   },
@@ -169,7 +169,7 @@ Use create_coding_task with:
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
       {
@@ -189,7 +189,7 @@ Please create a Jules task with this strategy:
 6. Create a summary of all updates with versions and breaking changes
 
 Use create_coding_task with:
-- Source: sources/github/${args.repository}
+- Source: ${args.repository} (copy the exact name returned by list_sources; do not rewrite it)
 - require_plan_approval: true (to review update strategy; important for safe OpenClaw/Codex integration)
 - auto_create_pr: true
 
@@ -203,7 +203,7 @@ For recurring updates, use schedule_recurring_task with cron "0 9 * * 1" (Monday
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
       {
@@ -212,12 +212,12 @@ For recurring updates, use schedule_recurring_task with cron "0 9 * * 1" (Monday
         required: true,
       },
     ],
-    template: (args) => `Create a Jules coding task for repository ${args.repository} with this task:
+    template: (args) => `    Create a Jules coding task for Jules source ${args.repository} with this task:
 
 ${args.task_description}
 
 Workflow:
-1. Call create_coding_task with source set to sources/github/${args.repository}, require_plan_approval=true, and auto_create_pr=true.
+1. Call list_sources and copy the exact name for ${args.repository}; then call create_coding_task with that source unchanged, require_plan_approval=true, and auto_create_pr=true.
 2. Call wait_for_session for the returned session ID. Use the default target states unless you need to stop at AWAITING_PLAN_APPROVAL or AWAITING_USER_FEEDBACK.
 3. Read jules://sessions/{id}/full after the wait completes.
 4. Summarize the current state, next steps, activities, and any PR URL or output artifacts.`,
@@ -257,7 +257,7 @@ Use create_repoless_task with a prompt that:
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
       {
@@ -281,7 +281,7 @@ Use create_repoless_task with a prompt that:
         required: false,
       },
     ],
-    template: (args) => `Create a Jules coding task for repository ${args.repository} to implement the feature "${args.feature_name}".
+    template: (args) => `    Create a Jules coding task for Jules source ${args.repository} to implement the feature "${args.feature_name}".
 
 Feature description:
 ${args.description}
@@ -296,7 +296,7 @@ ${args.affected_files ? `Likely affected files:\n${args.affected_files.split(','
 4. Document any assumptions or follow-up work in the final summary.
 
 Use create_coding_task with:
-- Source: sources/github/${args.repository}
+- Source: ${args.repository} (copy the exact name returned by list_sources; do not rewrite it)
 - require_plan_approval: true
 - auto_create_pr: true`,
   },
@@ -308,7 +308,7 @@ Use create_coding_task with:
     arguments: [
       {
         name: 'repository',
-        description: 'Repository name (format: owner/repo)',
+        description: 'Exact Jules source resource name returned by list_sources.',
         required: true,
       },
       {
@@ -322,7 +322,7 @@ Use create_coding_task with:
         required: true,
       },
     ],
-    template: (args) => `Create a Jules coding task for repository ${args.repository} to address feedback on pull request #${args.pr_number}.
+    template: (args) => `    Create a Jules coding task for Jules source ${args.repository} to address feedback on pull request #${args.pr_number}.
 
 Review feedback:
 ${args.feedback}
@@ -334,7 +334,7 @@ Task requirements:
 4. Summarize how each feedback item was addressed.
 
 Use create_coding_task with:
-- Source: sources/github/${args.repository}
+- Source: ${args.repository} (copy the exact name returned by list_sources; do not rewrite it)
 - require_plan_approval: true
 - auto_create_pr: true`,
   },

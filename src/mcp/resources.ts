@@ -59,22 +59,36 @@ export class JulesResources {
     activityName?: string;
     createTime?: string;
   } {
-    for (let index = activities.length - 1; index >= 0; index -= 1) {
-      const activity = activities[index];
-      const artifacts = activity.artifacts || [];
-      for (let artifactIndex = artifacts.length - 1; artifactIndex >= 0; artifactIndex -= 1) {
-        const gitPatch = artifacts[artifactIndex]?.changeSet?.gitPatch;
-        if (gitPatch) {
-          return {
+    let latest: {
+      gitPatch?: GitPatch;
+      activityName?: string;
+      createTime?: string;
+    } = {};
+    let latestTimestamp = Number.NEGATIVE_INFINITY;
+
+    for (const activity of activities) {
+      for (const artifact of activity.artifacts || []) {
+        const gitPatch = artifact.changeSet?.gitPatch;
+        if (!gitPatch) continue;
+        const timestamp = activity.createTime
+          ? Date.parse(activity.createTime)
+          : Number.NaN;
+        if (
+          !latest.gitPatch ||
+          !Number.isFinite(timestamp) ||
+          timestamp >= latestTimestamp
+        ) {
+          latest = {
             gitPatch,
             activityName: activity.name,
             createTime: activity.createTime,
           };
+          if (Number.isFinite(timestamp)) latestTimestamp = timestamp;
         }
       }
     }
 
-    return {};
+    return latest;
   }
 
   /**
@@ -232,7 +246,6 @@ export class JulesResources {
     let nextPageToken: string | undefined;
     let complete = false;
     const activities: Activity[] = [];
-    let latest: ReturnType<JulesResources['getLatestChangeSet']> = {};
     for (let page = 0; page < 100; page += 1) {
       const response = await this.client.listActivities(sessionId, 100, pageToken);
       activities.push(...response.activities);
@@ -243,7 +256,7 @@ export class JulesResources {
       }
       pageToken = response.nextPageToken;
     }
-    latest = this.getLatestChangeSet(activities);
+    const latest = this.getLatestChangeSet(activities);
 
     if (!latest.gitPatch) {
       return JSON.stringify(

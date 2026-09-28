@@ -14,14 +14,13 @@ Practical examples of using the Jules MCP Server with AI assistants.
 
 #### AI Assistant Actions
 
-1. Read `jules://sources` to find `sources/github/myorg/backend`
+1. Call `list_sources` or read `jules://sources`; select the repository using its GitHub metadata and copy the exact returned `name`
 2. Call `create_coding_task`:
 
    ```json
    {
      "prompt": "Fix the authentication bug in src/auth/login.ts. The bug causes users to be logged out after 5 minutes instead of the configured 30 minutes. Investigate the session timeout logic and correct it.",
-     "source": "sources/github/myorg/backend",
-     "branch": "main",
+     "source": "sources/github-myorg-backend",
      "auto_create_pr": true,
      "require_plan_approval": true
    }
@@ -40,10 +39,10 @@ Practical examples of using the Jules MCP Server with AI assistants.
 #### AI
 
 1. Calls `create_coding_task` with detailed prompt about test coverage
-2. Monitors via `get_session_status`
+2. Monitors via `get_session` or `wait_for_session`
 3. When state reaches `AWAITING_PLAN_APPROVAL`, reads `jules://sessions/{id}/full`
 4. Shows plan to user for approval
-5. After user confirms, calls `manage_session` with `action: approve_plan`
+5. After user confirms, calls `approve_plan`
 
 ## Scheduled Maintenance
 
@@ -65,7 +64,7 @@ Practical examples of using the Jules MCP Server with AI assistants.
      "task_name": "Frontend Weekly Deps",
      "cron_expression": "0 9 * * 1",
      "prompt": "Update all npm dependencies to their latest compatible versions. Check for breaking changes in major version updates. Run tests after updating. If tests fail, revert that specific update and document why.",
-     "source": "sources/github/myorg/frontend",
+     "source": "sources/github-myorg-frontend",
      "auto_create_pr": true,
      "require_plan_approval": false
    }
@@ -146,12 +145,11 @@ Uses the `audit_security` prompt template with `schedule_recurring_task`:
 
 #### AI
 
-1. Calls `manage_session`:
+1. Calls `send_session_message`:
 
    ```json
    {
      "session_id": "abc123",
-     "action": "send_message",
      "message": "Please use the lodash library for utility functions instead of creating custom implementations. Import lodash and refactor the custom utilities to use lodash methods."
    }
    ```
@@ -240,13 +238,13 @@ Calls `list_schedules` tool, returns:
       "name": "Frontend Weekly Deps",
       "cron": "0 9 * * 1",
       "nextRun": "2025-01-20T09:00:00Z",
-      "repository": "sources/github/myorg/frontend"
+      "repository": "sources/github-myorg-frontend"
     },
     {
       "name": "Monthly Security Audit",
       "cron": "0 2 1 * *",
       "nextRun": "2025-02-01T02:00:00Z",
-      "repository": "sources/github/myorg/api"
+      "repository": "sources/github-myorg-api"
     }
   ]
 }
@@ -321,7 +319,7 @@ Calls `create_coding_task`, receives error:
 ```json
 {
   "success": false,
-  "error": "Repository 'sources/github/myorg/nonexistent-repo' not found. Please check jules://sources for available repositories."
+  "error": "Repository not found. Please check jules://sources and use the exact Jules source name returned there."
 }
 ```
 
@@ -363,7 +361,7 @@ slackBot.on('message', async (message) => {
     // Call Jules MCP via your AI orchestrator
     const result = await mcpClient.callTool('create_coding_task', {
       prompt,
-      source: 'sources/github/company/repo',
+      source: 'sources/github-company-repo',
       auto_create_pr: true
     });
 
@@ -390,7 +388,8 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: |
           # Call Jules MCP server
-          echo '{"tool":"create_coding_task","args":{"prompt":"Update deps","source":"sources/github/${{github.repository}}"}}' \
+          # Resolve the exact Jules source name from list_sources using owner/repo metadata.
+          echo '{"tool":"create_coding_task","args":{"prompt":"Update deps","source":"EXACT_SOURCE_NAME_FROM_LIST_SOURCES"}}' \
             | node /path/to/jules-mcp/dist/index.js
 ```
 
@@ -438,7 +437,7 @@ Don't expect perfection on first try:
 
 1. Start task with `require_plan_approval: true`
 2. Review plan
-3. Send feedback via `manage_session` if needed
+3. Send feedback via `send_session_message` if needed
 4. Approve when satisfied
 5. Monitor execution
 6. If result isn't perfect, create follow-up task with context from first task

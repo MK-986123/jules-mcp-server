@@ -8,7 +8,7 @@ import schedule from 'node-schedule';
 import type { ScheduledTask } from '../types/schedule.js';
 import type { JulesClient } from '../api/jules-client.js';
 import type { ScheduleStorage } from '../storage/schedule-store.js';
-import { retryWithBackoff } from '../utils/security.js';
+import { RepositoryValidator } from '../utils/security.js';
 
 /**
  * Manages the scheduling and execution of cron jobs for Jules tasks.
@@ -148,24 +148,25 @@ export class CronEngine {
       this.logger(`[${timestamp}] Executing scheduled task: ${task.name}`);
 
       try {
-        // Create Jules session with retry logic (3 attempts with exponential backoff)
-        const session = await retryWithBackoff(
-          () =>
-            this.julesClient.createSession({
-              prompt: task.taskPayload.prompt,
-              sourceContext: {
-                source: task.taskPayload.source,
-                githubRepoContext: {
-                  startingBranch: task.taskPayload.branch || 'main',
-                },
-              },
-              automationMode: task.taskPayload.automationMode,
-              requirePlanApproval: task.taskPayload.requirePlanApproval,
-              title: task.taskPayload.title,
-            }),
-          3, // maxRetries
-          2000 // 2 second base delay
-        );
+        const source = await this.julesClient.getSource(task.taskPayload.source);
+        RepositoryValidator.validateRepository(source);
+        const startingBranch =
+          task.taskPayload.branch || source.githubRepo?.defaultBranch?.displayName;
+        if (!startingBranch) {
+          throw new Error(
+            `Jules source "${source.name}" has no default branch; the scheduled task requires an explicit branch.`
+          );
+        }
+        const session = await this.julesClient.createSession({
+          prompt: task.taskPayload.prompt,
+          sourceContext: {
+            source: source.name,
+            githubRepoContext: { startingBranch },
+          },
+          automationMode: task.taskPayload.automationMode,
+          requirePlanApproval: task.taskPayload.requirePlanApproval,
+          title: task.taskPayload.title,
+        });
 
         this.logger(
           `✓ Task "${task.name}" created session: ${session.id}`
@@ -175,7 +176,7 @@ export class CronEngine {
         await this.storage.updateLastRun(task.id, timestamp, session.id);
       } catch (error) {
         this.logger(
-          `✗ Task "${task.name}" failed after 3 retries: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `✗ Task "${task.name}" failed: ${error instanceof Error ? error.message : 'Unknown error'}`
         );
 
         // Update last run even on failure for audit trail

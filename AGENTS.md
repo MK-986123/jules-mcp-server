@@ -4,16 +4,16 @@ This file (`AGENTS.md`) is the canonical source of instruction and context for A
 
 ## Project Purpose & Architecture
 
-- **Purpose:** A production-ready Model Context Protocol (MCP) server for the Google Jules API. It enables AI assistants (like Claude) to dispatch coding tasks and schedule recurring automated tasks directly.
+- **Purpose:** A community Model Context Protocol (MCP) server for selected Google Jules API workflows and local recurring schedules. Jules is v1alpha; do not claim production readiness or complete API coverage without live-contract validation.
 - **Architecture:** The server implements a **"Thick Server"** pattern. Because the Jules API v1alpha is stateless and lacks native scheduling, this MCP server handles scheduling locally using `node-schedule` and persists task data locally.
 - **Disclaimer:** Independent, open-source project, not officially Google.
 
 ## Technology Stack & Environment
 
-- **Runtime:** Node.js `>=18.0.0` (Current development engine is v22+).
+- **Runtime:** Node.js `>=20.0.0` (Current development engine is v22+).
 - **Language:** TypeScript `^5.9.3`.
 - **Key Dependencies:**
-  - `@modelcontextprotocol/sdk` (`^1.29.0`) - Core protocol library.
+  - `@modelcontextprotocol/server` and `@modelcontextprotocol/client` (`^2.1.0`) - MCP TypeScript SDK v2.
   - `node-schedule` (`^2.1.1`) - Cron engine for thick-server persistence.
   - `vitest` (`^4.1.4`) - Unit testing framework.
   - `zod` (`^4.3.6`) - Input validation.
@@ -48,6 +48,8 @@ Use these exact commands when verifying, building, and running tasks:
 - **Safe AI Configuration:** In prompt and resource generation, always enforce configuration that requires human review for OpenClaw/Codex/AI integrations, specifically `require_plan_approval: true` and `auto_create_pr: true`.
 - **Quota-Aware Scheduling:** Scheduled tasks must execute no more frequently than once per hour to prevent upstream API quota exhaustion.
 - **Mocking Strategy (Vitest):** Use `vi.stubEnv()` and `vi.unstubAllEnvs()` for environment variable manipulation during testing.
+- **Jules API contract:** Treat source names as opaque and reuse exact `Source.name` values; model activities with current event payloads and `artifacts[].changeSet.gitPatch`. Preserve unknown alpha session states.
+- **MCP protocol:** Use the SDK `serveStdio` helper to serve legacy and modern protocol eras; keep diagnostics on stderr and stdio output protocol-only.
 
 ## Agent Boundaries
 
