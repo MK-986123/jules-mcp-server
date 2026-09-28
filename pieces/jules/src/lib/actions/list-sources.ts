@@ -31,7 +31,7 @@ export const listSourcesAction = createAction({
    * @param context - The context containing auth and property values.
    * @returns Source metadata and a continuation token when more pages remain.
    */
-  async run({ auth }) {
+  async run({ auth, propsValue }) {
     const response = await listSources(
       auth as JulesAuthValue,
       propsValue.pageSize ?? 100,

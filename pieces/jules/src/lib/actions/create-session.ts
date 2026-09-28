@@ -4,8 +4,8 @@
  */
 
 import { createAction, Property } from '@activepieces/pieces-framework';
-import { julesAuth, type JulesAuthValue } from '../auth';
-import { createSession, resolveSource } from '../api';
+import { julesAuth, type JulesAuthValue } from '../auth.js';
+import { createSession, resolveSource } from '../api.js';
 
 /**
  * Action definition for creating a new Jules coding session.

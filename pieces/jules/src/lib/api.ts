@@ -5,7 +5,7 @@
  */
 
 import { httpClient, HttpMethod, type HttpRequest } from '@activepieces/pieces-common';
-import type { JulesAuthValue } from './auth';
+import type { JulesAuthValue } from './auth.js';
 
 /**
  * Base URL for the Jules v1alpha API.

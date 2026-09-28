@@ -104,11 +104,8 @@ JULES_API_KEY=your_jules_api_key_here
 # Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 JULES_ENCRYPTION_KEY=your_strong_random_key_here
 
-# Required for create_coding_task. Comma-separated list of authorized repositories.
+# Optional repository allowlist. Comma-separated owner/repo entries.
 JULES_ALLOWED_REPOS=owner/repo1,owner/repo2
-
-# Optional - Default branch for coding tasks
-JULES_DEFAULT_BRANCH=main
 ```
 
 ## Security & Privacy
