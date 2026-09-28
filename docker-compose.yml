@@ -1,0 +1,12 @@
+services:
+  jules-mcp:
+    build: .
+    container_name: jules-mcp-server
+    env_file: .env
+    volumes:
+      - jules-mcp-data:/home/node/.jules-mcp
+    restart: unless-stopped
+    command: ["tail", "-f", "/dev/null"]
+
+volumes:
+  jules-mcp-data:
