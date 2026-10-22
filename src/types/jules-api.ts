@@ -7,8 +7,10 @@
  * Represents a source repository for Jules.
  */
 export interface Source {
-  /** Resource name format: sources/github/{owner}/{repo} */
+  /** Opaque resource name returned by the API; do not construct it from a URL. */
   name: string;
+  /** Unique source identifier. */
+  id?: string;
   /** GitHub repository details */
   githubRepo?: {
     /** The owner of the GitHub repository. */
@@ -16,9 +18,13 @@ export interface Source {
     /** The name of the GitHub repository. */
     repo: string;
     /** The HTML URL of the GitHub repository. */
-    htmlUrl: string;
+    htmlUrl?: string;
     /** The default branch of the GitHub repository. */
-    defaultBranch: string;
+    defaultBranch: string | { displayName: string };
+    /** Available repository branches. */
+    branches?: { displayName: string }[];
+    /** Whether the repository is private. */
+    isPrivate?: boolean;
   };
 }
 
@@ -169,6 +175,17 @@ export type ActivityType =
  * Represents a set of changes in a plan.
  */
 export interface ChangeSet {
+  /** Source resource associated with a patch returned by the Jules API. */
+  source?: string;
+  /** Git patch artifact returned by the Jules API. */
+  gitPatch?: {
+    /** Commit on which the patch is based. */
+    baseCommitId?: string;
+    /** Unified diff for the proposed changes. */
+    unidiffPatch?: string;
+    /** Commit message suggested by Jules. */
+    suggestedCommitMessage?: string;
+  };
   /** Unified patch for the full change set */
   patch?: string;
   /** Array of file changes */
@@ -190,26 +207,54 @@ export interface ChangeSet {
 export interface Activity {
   /** Resource name format: sessions/{session_id}/activities/{activity_id} */
   name: string;
-  /** Activity type */
-  type: ActivityType;
-  /** Timestamp when activity occurred */
+  /** Unique activity ID returned by the API. */
+  id?: string;
+  /** Actor that generated the activity. */
+  originator?: string;
+  /** Human-readable activity description. */
+  description?: string;
+  /** Timestamp returned by the current API. */
+  createTime?: string;
+  /** Legacy activity type retained for older fixtures and consumers. */
+  type?: ActivityType;
+  /** Legacy timestamp retained for older fixtures and consumers. */
   timestamp?: string;
+  /** Artifacts produced by an activity, including reviewable patches and test output. */
+  artifacts?: {
+    /** Proposed repository changes. */
+    changeSet?: ChangeSet;
+    /** Command execution evidence. */
+    bashOutput?: { command?: string; output?: string; exitCode?: number };
+    /** Inline media data returned by Jules. */
+    media?: { mimeType?: string; data?: string };
+  }[];
   /** Activity-specific payload */
   planGenerated?: {
     /** The generated plan description. */
-    plan: string;
+    plan: string | {
+      /** Identifier of the generated plan. */
+      id?: string;
+      /** Ordered implementation steps. */
+      steps?: { id?: string; index?: number; title?: string; description?: string }[];
+      /** Timestamp when the plan was created. */
+      createTime?: string;
+    };
     /** The set of changes proposed in the plan. */
     changeSet?: ChangeSet;
   };
   progressUpdated?: {
     /** The progress message. */
-    message: string;
+    message?: string;
+    /** Summary of current progress. */
+    title?: string;
+    /** Details of current progress. */
+    description?: string;
     /** The completion percentage. */
     percentage?: number;
   };
   sessionCompleted?: {
     /** Whether the session completed successfully. */
-    success: boolean;
+    success?: boolean;
     /** A message describing the completion. */
     message?: string;
     /** The URL of the created pull request, if any. */
@@ -225,12 +270,20 @@ export interface Activity {
   };
   planApproved?: {
     /** When the plan was approved. */
-    approvedAt: string;
+    approvedAt?: string;
+    /** Identifier of the approved plan. */
+    planId?: string;
   };
   agentMessaged?: {
     /** Agent-authored message requiring user attention. */
-    message: string;
+    message?: string;
+    /** Agent message returned by the current API. */
+    agentMessage?: string;
   };
+  /** User feedback recorded by the current API. */
+  userMessaged?: { userMessage: string };
+  /** Failure details returned by the current API. */
+  sessionFailed?: { reason?: string };
   media?: {
     /** Optional media URL. */
     url?: string;

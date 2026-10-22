@@ -34,6 +34,8 @@ import {
   DeleteScheduleSchema,
   DeleteSessionSchema,
   GetSourceDetailsSchema,
+  PaginationSchema,
+  SessionReviewSchema,
 } from './mcp/tools.js';
 import { JulesPromptManager, JULES_PROMPTS } from './mcp/prompts.js';
 import { RepositoryValidator } from './utils/security.js';
@@ -211,230 +213,32 @@ class JulesMCPServer {
     // Tool handlers
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
-        {
-          name: 'create_coding_task',
-          description:
-            'Creates a new Jules coding session. Returns immediately with a session ID. Monitor progress via jules://sessions/{id}/full resource.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              prompt: {
-                type: 'string',
-                description:
-                  'Natural language instruction for the coding task',
-              },
-              source: {
-                type: 'string',
-                description:
-                  'Repository resource name (sources/github/owner/repo)',
-              },
-              branch: {
-                type: 'string',
-                description: 'Git branch to base changes on',
-                default: 'main',
-              },
-              auto_create_pr: {
-                type: 'boolean',
-                description:
-                  'Automatically create Pull Request upon completion',
-                default: true,
-              },
-              require_plan_approval: {
-                type: 'boolean',
-                description: 'Pause for manual plan review',
-                default: false,
-              },
-              title: {
-                type: 'string',
-                description: 'Optional session title',
-              },
-            },
-            required: ['prompt', 'source'],
-          },
+        { name: 'list_sources', description: 'List one page of repositories connected to Jules. Use exact returned source names and branch metadata.', schema: PaginationSchema, readOnly: true },
+        { name: 'list_sessions', description: 'List one page of Jules sessions to locate existing work before creating another task.', schema: PaginationSchema, readOnly: true },
+        { name: 'get_session_review', description: 'Read session details, a page of plan/feedback evidence and continuation token. Follow every page before approving a plan.', schema: SessionReviewSchema, readOnly: true },
+        { name: 'get_session_diff', description: 'Read session patch artifacts and pagination evidence. Review GitHub PR checks separately before merging.', schema: SessionReviewSchema, readOnly: true },
+        { name: 'create_coding_task', description: 'Create a Jules coding task. Plan approval is required by default and a pull request is created on completion. Returns immediately; planning may still be in progress.', schema: CreateTaskSchema, readOnly: false },
+        { name: 'create_repoless_task', description: 'Create a Jules task without repository context, requiring plan approval.', schema: CreateRepolessTaskSchema, readOnly: false },
+        { name: 'manage_session', description: 'Approve a reviewed plan or send feedback. reject_plan requests a revision and preserves the session; delete_session is a separate destructive action.', schema: ManageSessionSchema, readOnly: false },
+        { name: 'get_session_status', description: 'Read the current state of a Jules session.', schema: GetSessionStatusSchema, readOnly: true },
+        { name: 'wait_for_session', description: 'Poll briefly, returning on completion, failure, user attention, or timeout. Timeout returns the observed state; call again later.', schema: WaitForSessionSchema, readOnly: true },
+        { name: 'get_activities_since', description: 'Read one page and locally filter activities after a timestamp. Continue with nextPageToken even when the filtered page is empty.', schema: GetActivitiesSinceSchema, readOnly: true },
+        { name: 'schedule_recurring_task', description: 'Create a persistent recurring task (at most hourly). Execution requires this process to remain running.', schema: ScheduleTaskSchema, readOnly: false },
+        { name: 'list_schedules', description: 'Read locally managed schedules.', schema: z.object({}), readOnly: true },
+        { name: 'delete_schedule', description: 'Delete a locally managed schedule.', schema: DeleteScheduleSchema, readOnly: false },
+        { name: 'delete_session', description: 'Permanently delete a Jules session. Requesting a plan revision does not require this action.', schema: DeleteSessionSchema, readOnly: false },
+        { name: 'get_source_details', description: 'Read branch and repository metadata for an exact Jules source resource name.', schema: GetSourceDetailsSchema, readOnly: true },
+      ].map(({ name, description, schema, readOnly }) => ({
+        name,
+        description,
+        inputSchema: z.toJSONSchema(schema, { io: 'input' }) as { type: 'object' },
+        annotations: {
+          readOnlyHint: readOnly,
+          destructiveHint: !readOnly,
+          idempotentHint: readOnly,
+          openWorldHint: true,
         },
-        {
-          name: 'create_repoless_task',
-          description:
-            'Creates a new Jules session without repository context for scripts, prototypes, or research tasks.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              prompt: {
-                type: 'string',
-                description: 'Natural language instruction for the repoless task',
-              },
-              title: {
-                type: 'string',
-                description: 'Optional session title',
-              },
-            },
-            required: ['prompt'],
-          },
-        },
-        {
-          name: 'manage_session',
-          description:
-            'Manage an active Jules session: approve or reject plans, or send feedback',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              session_id: { type: 'string', description: 'Session ID' },
-              action: {
-                type: 'string',
-                enum: ['approve_plan', 'send_message', 'reject_plan'],
-                description: 'Action to perform',
-              },
-              message: {
-                type: 'string',
-                description: 'Message (required for send_message)',
-              },
-            },
-            required: ['session_id', 'action'],
-          },
-        },
-        {
-          name: 'get_session_status',
-          description:
-            'Get the current status and state of a Jules session',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              session_id: { type: 'string', description: 'Session ID' },
-            },
-            required: ['session_id'],
-          },
-        },
-        {
-          name: 'wait_for_session',
-          description:
-            'Poll a Jules session until it reaches a target state or the timeout expires',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              session_id: { type: 'string', description: 'Session ID' },
-              timeout_seconds: {
-                type: 'number',
-                description: 'Maximum time to wait in seconds',
-                default: 300,
-              },
-              poll_interval_seconds: {
-                type: 'number',
-                description: 'Polling interval in seconds',
-                default: 10,
-              },
-              target_states: {
-                type: 'array',
-                description: 'States that stop the polling loop',
-                items: {
-                  type: 'string',
-                  enum: [
-                    'COMPLETED',
-                    'FAILED',
-                    'CANCELED',
-                    'AWAITING_PLAN_APPROVAL',
-                    'AWAITING_USER_FEEDBACK',
-                  ],
-                },
-              },
-            },
-            required: ['session_id'],
-          },
-        },
-        {
-          name: 'get_activities_since',
-          description:
-            'Get session activities newer than a provided ISO timestamp',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              session_id: { type: 'string', description: 'Session ID' },
-              since: {
-                type: 'string',
-                description: 'ISO 8601 timestamp lower bound',
-              },
-              page_size: {
-                type: 'number',
-                description: 'Maximum number of activities to return',
-                default: 50,
-              },
-            },
-            required: ['session_id', 'since'],
-          },
-        },
-        {
-          name: 'schedule_recurring_task',
-          description:
-            'Schedule a Jules task to run automatically on a cron schedule. The server manages execution even when offline.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              task_name: {
-                type: 'string',
-                description: 'Unique name for this schedule',
-              },
-              cron_expression: {
-                type: 'string',
-                description:
-                  'Cron expression (e.g., "0 9 * * 1" for Mondays at 9 AM)',
-              },
-              prompt: { type: 'string', description: 'Task instruction' },
-              source: {
-                type: 'string',
-                description: 'Repository resource name',
-              },
-              branch: { type: 'string', default: 'main' },
-              auto_create_pr: { type: 'boolean', default: true },
-              require_plan_approval: { type: 'boolean', default: false },
-              timezone: { type: 'string', description: 'Timezone for cron' },
-            },
-            required: ['task_name', 'cron_expression', 'prompt', 'source'],
-          },
-        },
-        {
-          name: 'list_schedules',
-          description: 'List all locally-managed scheduled tasks',
-          inputSchema: {
-            type: 'object',
-            properties: {},
-          },
-        },
-        {
-          name: 'delete_schedule',
-          description: 'Delete a scheduled task by name',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              task_name: { type: 'string', description: 'Schedule name' },
-            },
-            required: ['task_name'],
-          },
-        },
-        {
-          name: 'delete_session',
-          description: 'Delete or cancel an active Jules session',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              session_id: { type: 'string', description: 'Session ID' },
-            },
-            required: ['session_id'],
-          },
-        },
-        {
-          name: 'get_source_details',
-          description: 'Get detailed information about a source repository',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              source_name: {
-                type: 'string',
-                description: 'Source resource name (sources/github/owner/repo)',
-              },
-            },
-            required: ['source_name'],
-          },
-        },
-      ],
+      })),
     }));
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -444,6 +248,22 @@ class JulesMCPServer {
         let result: string;
 
         switch (name) {
+          case 'list_sources': {
+            result = await this.tools.listSources(PaginationSchema.parse(args ?? {}));
+            break;
+          }
+          case 'list_sessions': {
+            result = await this.tools.listSessions(PaginationSchema.parse(args ?? {}));
+            break;
+          }
+          case 'get_session_review': {
+            result = await this.tools.getSessionReview(SessionReviewSchema.parse(args));
+            break;
+          }
+          case 'get_session_diff': {
+            result = await this.tools.getSessionDiff(SessionReviewSchema.parse(args));
+            break;
+          }
           case 'create_coding_task': {
             const validated = CreateTaskSchema.parse(args);
             result = await this.tools.createCodingTask(validated);

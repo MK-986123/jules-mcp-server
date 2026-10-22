@@ -2,6 +2,23 @@
 
 Complete reference for all Resources, Tools, and Prompts exposed by this MCP server.
 
+## Tool-only ChatGPT workflow
+
+Use these tools when the host does not expose MCP resources:
+
+| Tool | Inputs | Result |
+| --- | --- | --- |
+| `list_sources` | `page_size` (1–100, default 20), optional `page_token` | Raw source metadata and `nextPageToken` |
+| `list_sessions` | Same pagination inputs | Sessions and `nextPageToken` |
+| `get_session_review` | `session_id`, optional `page_token` | Session plus one page of plans, questions, artifacts and `nextPageToken` |
+| `get_session_diff` | `session_id`, optional `page_token` | Patch evidence from one activity page and `nextPageToken` |
+| `get_activities_since` | `session_id`, ISO `since`, optional `page_size` and `page_token` | Locally filtered activities with continuation token |
+| `wait_for_session` | `session_id`, optional `timeout_seconds` (5–50, default 25), `poll_interval_seconds` (5–60, default 10), `target_states` | State/next steps; `timedOut: true` on deadline |
+
+Copy source resource names from discovery; their shape is opaque. Resolve branches from source metadata. Follow every continuation token, including those returned on an empty filtered page. Waits always return for terminal and user-attention states. `manage_session` approval/message endpoints may return no new state; fetch status separately. `reject_plan` sends a revision request and preserves the session; `delete_session` deletes it. Mutations are never automatically retried after an uncertain response. Plan approval defaults to true for tasks and schedules.
+
+The `prepare_task_brief` MCP prompt accepts `repository`, `objective`, `acceptance_criteria`, and optional `constraints`. See [ChatGPT setup](CHATGPT.md) and [operating practices](JULES_OPERATIONS.md).
+
 ## Resources
 
 Resources are read-only data that provide context to the AI assistant.
@@ -141,7 +158,7 @@ Resources are read-only data that provide context to the AI assistant.
 
 **URI Pattern:** `jules://sessions/{sessionId}/diff`
 
-**MIME Type:** `text/plain`
+**MIME Type:** `application/json`
 
 #### Response Format
 
@@ -232,7 +249,7 @@ Tools are executable functions that perform actions.
 | `source` | string | Yes | - | Repository resource name (sources/github/owner/repo) |
 | `branch` | string | No | "main" | Git branch to base changes on |
 | `auto_create_pr` | boolean | No | true | Automatically create Pull Request |
-| `require_plan_approval` | boolean | No | false | Pause for manual plan review |
+| `require_plan_approval` | boolean | No | true | Pause for manual plan review |
 | `title` | string | No | - | Optional session title |
 
 #### Returns
@@ -256,7 +273,7 @@ Tools are executable functions that perform actions.
 }
 ```
 
-**Consequential:** No (returns immediately; actual code changes happen asynchronously)
+**Consequential:** Yes (creates remote work that can change repository code after plan approval)
 
 ---
 
@@ -328,7 +345,7 @@ Tools are executable functions that perform actions.
 | `source` | string | Yes | - | Repository resource name |
 | `branch` | string | No | "main" | Git branch |
 | `auto_create_pr` | boolean | No | true | Auto-create PRs |
-| `require_plan_approval` | boolean | No | false | Require approval |
+| `require_plan_approval` | boolean | No | true | Require approval |
 | `timezone` | string | No | System TZ | Timezone for cron |
 
 **Cron Format:** `minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6)`

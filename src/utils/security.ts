@@ -34,6 +34,7 @@ export class RepositoryValidator {
    */
   static initialize(): void {
     const allowList = process.env.JULES_ALLOWED_REPOS;
+    this.allowedRepos = null;
     if (allowList) {
       this.allowedRepos = allowList
         .split(',')
@@ -65,7 +66,7 @@ export class RepositoryValidator {
 
     const repoPath = match[1];
 
-    if (!this.allowedRepos.includes(repoPath)) {
+    if (!this.allowedRepos.some((repo) => repo.toLowerCase() === repoPath.toLowerCase())) {
       throw new SecurityError(
         `Security Error: Repository "${repoPath}" is not in the allowed list. ` +
           `Set JULES_ALLOWED_REPOS environment variable to authorize additional repositories.`

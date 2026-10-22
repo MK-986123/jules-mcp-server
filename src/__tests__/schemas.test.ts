@@ -22,7 +22,16 @@ describe('CreateTaskSchema', () => {
     const result = CreateTaskSchema.parse(base);
     expect(result.branch).toBe('main');
     expect(result.auto_create_pr).toBe(true);
-    expect(result.require_plan_approval).toBe(false);
+    expect(result.require_plan_approval).toBe(true);
+  });
+
+  it('accepts opaque source IDs and dotted repository names', () => {
+    expect(CreateTaskSchema.parse({ ...base, source: 'sources/opaque-id' }).source).toBe('sources/opaque-id');
+    expect(CreateTaskSchema.parse({ ...base, source: 'sources/github/owner/repo.name' }).source).toContain('repo.name');
+  });
+
+  it('rejects source path traversal', () => {
+    expect(() => CreateTaskSchema.parse({ ...base, source: 'sources/../sessions' })).toThrow();
   });
 
   it('rejects prompt shorter than 10 chars', () => {
@@ -104,6 +113,7 @@ describe('ScheduleTaskSchema', () => {
     const result = ScheduleTaskSchema.parse(base);
     expect(result.branch).toBe('main');
     expect(result.auto_create_pr).toBe(true);
+    expect(result.require_plan_approval).toBe(true);
   });
 
   it('rejects task_name with special characters', () => {
@@ -124,16 +134,16 @@ describe('ScheduleTaskSchema', () => {
 describe('WaitForSessionSchema', () => {
   it('applies defaults', () => {
     const result = WaitForSessionSchema.parse({ session_id: 'sess-1' });
-    expect(result.timeout_seconds).toBe(300);
+    expect(result.timeout_seconds).toBe(25);
     expect(result.poll_interval_seconds).toBe(10);
-    expect(result.target_states).toEqual(['COMPLETED', 'FAILED', 'CANCELED']);
+    expect(result.target_states).toEqual(['COMPLETED', 'FAILED', 'CANCELED', 'AWAITING_PLAN_APPROVAL', 'AWAITING_USER_FEEDBACK']);
   });
 
-  it('rejects timeout below 30', () => {
-    expect(() => WaitForSessionSchema.parse({ session_id: 'sess-1', timeout_seconds: 5 })).toThrow();
+  it('rejects timeout below 5', () => {
+    expect(() => WaitForSessionSchema.parse({ session_id: 'sess-1', timeout_seconds: 4 })).toThrow();
   });
 
-  it('rejects timeout above 1800', () => {
+  it('rejects timeout above 50', () => {
     expect(() => WaitForSessionSchema.parse({ session_id: 'sess-1', timeout_seconds: 3600 })).toThrow();
   });
 
