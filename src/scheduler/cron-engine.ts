@@ -8,7 +8,7 @@ import schedule from 'node-schedule';
 import type { ScheduledTask } from '../types/schedule.js';
 import type { JulesClient } from '../api/jules-client.js';
 import type { ScheduleStorage } from '../storage/schedule-store.js';
-import { retryWithBackoff } from '../utils/security.js';
+import { RepositoryValidator } from '../utils/security.js';
 
 /**
  * Manages the scheduling and execution of cron jobs for Jules tasks.
@@ -100,6 +100,7 @@ export class CronEngine {
       // and 6-part (with seconds: sec, min, hour, dom, month, dow).
       // The minute part is at index 0 for 5-part, and index 1 for 6-part.
       const minutePart = parts.length === 6 ? parts[1] : parts[0];
+      if (parts.length === 6 && !/^\d+$/.test(parts[0])) return false;
 
       // If minute is '*' or contains '*/X' where X < 55, or is a list with items close to each other, it's too frequent.
       // For simplicity and safety, the most robust check without complex parser logic:
@@ -148,10 +149,11 @@ export class CronEngine {
       this.logger(`[${timestamp}] Executing scheduled task: ${task.name}`);
 
       try {
-        // Create Jules session with retry logic (3 attempts with exponential backoff)
-        const session = await retryWithBackoff(
-          () =>
-            this.julesClient.createSession({
+        const source = await this.julesClient.getSource(task.taskPayload.source);
+        if (!source.githubRepo) throw new Error('Source has no GitHub repository metadata');
+        RepositoryValidator.validateRepository(`sources/github/${source.githubRepo.owner}/${source.githubRepo.repo}`);
+        // Do not replay creation after an uncertain response: Jules has no idempotency key.
+        const session = await this.julesClient.createSession({
               prompt: task.taskPayload.prompt,
               sourceContext: {
                 source: task.taskPayload.source,
@@ -160,12 +162,9 @@ export class CronEngine {
                 },
               },
               automationMode: task.taskPayload.automationMode,
-              requirePlanApproval: task.taskPayload.requirePlanApproval,
+              requirePlanApproval: task.taskPayload.requirePlanApproval ?? true,
               title: task.taskPayload.title,
-            }),
-          3, // maxRetries
-          2000 // 2 second base delay
-        );
+            });
 
         this.logger(
           `✓ Task "${task.name}" created session: ${session.id}`
@@ -175,7 +174,7 @@ export class CronEngine {
         await this.storage.updateLastRun(task.id, timestamp, session.id);
       } catch (error) {
         this.logger(
-          `✗ Task "${task.name}" failed after 3 retries: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `✗ Task "${task.name}" failed; creation was not replayed: ${error instanceof Error ? error.message : 'Unknown error'}`
         );
 
         // Update last run even on failure for audit trail

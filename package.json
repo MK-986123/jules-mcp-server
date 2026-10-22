@@ -18,7 +18,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"#**/node_modules\"",
-    "lint:knip": "knip --exclude types"
+    "lint:knip": "knip --exclude types",
+    "doctor": "node scripts/doctor.mjs"
   },
   "keywords": [
     "mcp",

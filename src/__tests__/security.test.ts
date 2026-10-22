@@ -31,6 +31,14 @@ describe('RepositoryValidator', () => {
       expect(RepositoryValidator.isAllowlistEnabled()).toBe(true);
     });
 
+    it('clears a previous allowlist when configuration is removed', () => {
+      vi.stubEnv('JULES_ALLOWED_REPOS', 'owner/repo');
+      RepositoryValidator.initialize();
+      vi.stubEnv('JULES_ALLOWED_REPOS', '');
+      RepositoryValidator.initialize();
+      expect(RepositoryValidator.isAllowlistEnabled()).toBe(false);
+    });
+
     it('should ignore empty entries in JULES_ALLOWED_REPOS', () => {
       vi.stubEnv('JULES_ALLOWED_REPOS', 'owner/repo,,owner/repo2, ');
       RepositoryValidator.initialize();
@@ -67,6 +75,12 @@ describe('RepositoryValidator', () => {
       expect(() => {
         RepositoryValidator.validateRepository('sources/github/owner/repo');
       }).not.toThrow();
+    });
+
+    it('matches GitHub repository names without case sensitivity', () => {
+      vi.stubEnv('JULES_ALLOWED_REPOS', 'MK-986123/Jules-MCP-Server');
+      RepositoryValidator.initialize();
+      expect(() => RepositoryValidator.validateRepository('sources/github/mk-986123/jules-mcp-server')).not.toThrow();
     });
 
     it('should throw if repository is not in allowlist', () => {

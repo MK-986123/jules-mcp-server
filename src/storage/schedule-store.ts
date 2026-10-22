@@ -52,7 +52,7 @@ export class ScheduleStorage {
    * Initializes paths for storage directory and file.
    */
   constructor() {
-    this.storageDir = join(homedir(), '.jules-mcp');
+    this.storageDir = process.env.JULES_STORAGE_DIR || join(homedir(), '.jules-mcp');
     this.storagePath = join(this.storageDir, 'schedules.enc');
   }
 

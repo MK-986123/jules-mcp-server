@@ -124,6 +124,63 @@ describe('JulesClient Resiliency', () => {
     // 1 initial + max retries
     expect(mockFetch).toHaveBeenCalledTimes(3);
   });
+
+  it.each(['network', 'server'])('does not replay create after an uncertain %s failure', async (failure) => {
+    const mockFetch = global.fetch as ReturnType<typeof vi.fn>;
+    if (failure === 'network') mockFetch.mockRejectedValue(new Error('connection lost'));
+    else mockFetch.mockResolvedValue({
+      ok: false, status: 503, statusText: 'Unavailable', text: vi.fn().mockResolvedValue(''),
+    });
+    await expect(client.createSession({ prompt: 'Change one file' })).rejects.toThrow(JulesAPIError);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay sendMessage or delete after an uncertain failure', async () => {
+    const mockFetch = global.fetch as ReturnType<typeof vi.fn>;
+    mockFetch.mockRejectedValue(new Error('connection lost'));
+    await expect(client.sendMessage('session-1', { prompt: 'Please revise' })).rejects.toThrow(JulesAPIError);
+    await expect(client.deleteSession('session-1')).rejects.toThrow(JulesAPIError);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('budgets retry backoff within the total session request deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const mockFetch = global.fetch as ReturnType<typeof vi.fn>;
+      mockFetch.mockRejectedValue(new Error('Temporary connection error'));
+      const pending = expect(client.getSession('1', 100)).rejects.toThrow('deadline exceeded');
+      await vi.advanceTimersByTimeAsync(100);
+      await pending;
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts a session response body when the total deadline expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const mockFetch = vi.mocked(global.fetch);
+      mockFetch.mockImplementation((_url, options = {}) => Promise.resolve({
+        ok: true,
+        json: () => new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => {
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        }),
+      } as Response));
+      const pending = expect(client.getSession('1', 100)).rejects.toThrow('deadline exceeded');
+      await vi.advanceTimersByTimeAsync(100);
+      await pending;
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('JulesClient Methods', () => {
@@ -154,6 +211,13 @@ describe('JulesClient Methods', () => {
     await expect(client.getSource('sources/test')).resolves.toEqual({ name: 'test' });
   });
 
+  it('rejects traversal and extra path syntax before sending credentials', async () => {
+    await expect(client.getSource('sources/../sessions')).rejects.toThrow('Invalid source');
+    await expect(client.getSession('../sources')).rejects.toThrow('Invalid session');
+    await expect(client.deleteSession('..')).rejects.toThrow('Invalid session');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it('createSession', async () => {
     mockSuccess({ id: '1' });
     await expect(client.createSession({ prompt: 'test' })).resolves.toEqual({ id: '1' });
@@ -174,6 +238,14 @@ describe('JulesClient Methods', () => {
     await expect(client.approvePlan('1')).resolves.toEqual({ id: '1', state: 'IN_PROGRESS' });
   });
 
+  it('accepts documented empty approval and sendMessage responses', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true, status: 200, text: vi.fn().mockResolvedValue(''),
+    });
+    await expect(client.approvePlan('1')).resolves.toEqual({});
+    await expect(client.sendMessage('1', { prompt: 'hello' })).resolves.toEqual({});
+  });
+
   it('sendMessage', async () => {
     mockSuccess({ id: '1' });
     await expect(client.sendMessage('1', { prompt: 'hello' })).resolves.toEqual({ id: '1' });
@@ -187,6 +259,20 @@ describe('JulesClient Methods', () => {
   it('listActivitiesSince', async () => {
     mockSuccess({ activities: [] });
     await expect(client.listActivitiesSince('1', '2025-01-01', 10)).resolves.toEqual({ activities: [] });
+  });
+
+  it('filters activity pages locally by createTime and preserves continuation', async () => {
+    mockSuccess({ activities: [
+      { id: 'old', createTime: '2026-01-01T00:00:00Z' },
+      { id: 'equal', createTime: '2026-01-02T00:00:00Z' },
+      { id: 'new', createTime: '2026-01-03T00:00:00Z' },
+    ], nextPageToken: 'next' });
+    const result = await client.listActivitiesSince('1', '2026-01-02T00:00:00Z', 10, 'cursor');
+    expect(result.activities.map((activity) => activity.id)).toEqual(['new']);
+    expect(result.nextPageToken).toBe('next');
+    const [url] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+    expect(new URL(url).searchParams.get('pageToken')).toBe('cursor');
+    expect(new URL(url).searchParams.has('filter')).toBe(false);
   });
 
   it('deleteSession', async () => {

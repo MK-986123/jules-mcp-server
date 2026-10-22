@@ -31,6 +31,17 @@ describe('JulesResources — extended coverage', () => {
   });
 
   describe('getSources', () => {
+    it('reads official branch metadata and retains the opaque resource name', async () => {
+      vi.mocked(clientMock.listSources).mockResolvedValue({ sources: [{
+        name: 'sources/github-owner-repo',
+        githubRepo: { owner: 'owner', repo: 'repo', defaultBranch: { displayName: 'develop' } },
+      }], nextPageToken: 'next' });
+      const result = JSON.parse(await resources.getSources());
+      expect(result.sources[0].name).toBe('sources/github-owner-repo');
+      expect(result.sources[0].defaultBranch).toBe('develop');
+      expect(result.sources[0].url).toBe('https://github.com/owner/repo');
+      expect(result.nextPageToken).toBe('next');
+    });
     it('returns formatted source list', async () => {
       (clientMock.listSources as ReturnType<typeof vi.fn>).mockResolvedValue({
         sources: [
@@ -65,6 +76,24 @@ describe('JulesResources — extended coverage', () => {
   });
 
   describe('getSessionFull', () => {
+    it('preserves official plan, questions and command artifacts with pagination', async () => {
+      vi.mocked(clientMock.getSession).mockResolvedValue({ name: 'sessions/1', id: '1', prompt: 'Fix the bug' });
+      const plan = { id: 'plan-1', steps: [{ id: 'step-1', index: 0, title: 'Inspect', description: 'Read the failing test' }] };
+      vi.mocked(clientMock.listActivities).mockResolvedValue({
+        activities: [
+          { name: 'sessions/1/activities/1', createTime: '2026-10-21T10:00:00Z', planGenerated: { plan } },
+          { name: 'sessions/1/activities/2', agentMessaged: { agentMessage: 'Which branch?' } },
+          { name: 'sessions/1/activities/3', artifacts: [{ bashOutput: { command: 'npm test', output: 'passed', exitCode: 0 } }] },
+        ], nextPageToken: 'next',
+      });
+      const result = JSON.parse(await resources.getSessionFull('1', 'cursor'));
+      expect(result.activities[0].plan).toEqual(plan);
+      expect(result.activities[0].timestamp).toBe('2026-10-21T10:00:00Z');
+      expect(result.activities[1].message).toBe('Which branch?');
+      expect(result.activities[2].artifacts[0].bashOutput.exitCode).toBe(0);
+      expect(result.nextPageToken).toBe('next');
+      expect(clientMock.listActivities).toHaveBeenCalledWith('1', 50, 'cursor');
+    });
     it('returns combined session and activities', async () => {
       (clientMock.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: 'sess-1',
@@ -90,6 +119,22 @@ describe('JulesResources — extended coverage', () => {
   });
 
   describe('getSessionDiff', () => {
+    it('extracts official gitPatch artifacts and selects latest createTime', async () => {
+      vi.mocked(clientMock.listActivities).mockResolvedValue({ activities: [
+        { name: 'sessions/1/activities/new', createTime: '2026-10-21T11:00:00Z', artifacts: [{ changeSet: {
+          source: 'sources/github-owner-repo', gitPatch: {
+            baseCommitId: 'abc123', unidiffPatch: 'diff --git a/new.ts b/new.ts\n+fixed', suggestedCommitMessage: 'Fix test',
+          },
+        } }] },
+        { name: 'sessions/1/activities/old', createTime: '2026-10-21T10:00:00Z', artifacts: [{ changeSet: { gitPatch: { unidiffPatch: 'old' } } }] },
+      ], nextPageToken: 'more' });
+      const result = JSON.parse(await resources.getSessionDiff('1', 'cursor'));
+      expect(result.patch).toContain('+fixed');
+      expect(result.fileCount).toBe(1);
+      expect(result.baseCommitId).toBe('abc123');
+      expect(result.nextPageToken).toBe('more');
+      expect(clientMock.listActivities).toHaveBeenCalledWith('1', 50, 'cursor');
+    });
     it('returns changeset when available', async () => {
       const activity: Activity = {
         type: 'PLAN_GENERATED',

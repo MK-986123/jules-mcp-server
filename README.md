@@ -24,14 +24,20 @@ This MCP server bridges the Google Jules coding agent with AI assistants, allowi
 - **Manage workflows** - Send feedback and iterate on Jules's work
 - **Activepieces Integration** - Use the included Jules piece (`pieces/jules`) to automate coding tasks in your Activepieces workflows
 
+### ChatGPT and Codex control
+
+Use the [ChatGPT connection guide](docs/CHATGPT.md) to connect this stdio server through OpenAI Secure MCP Tunnel on an existing computer. Follow the [operating guide](docs/JULES_OPERATIONS.md) for task selection, briefs, plan approval, feedback and GitHub review. Account permissions and a live credential/tunnel check are required before calling the integration operational.
+
+Tool-only clients can use `list_sources`, `list_sessions`, `get_session_review`, and `get_session_diff`. New tasks default to requiring plan approval. Copy exact source names from discovery, including opaque resource IDs.
+
 ### Architecture: The "Thick Server" Pattern
 
-Since the Jules API v1alpha is **stateless** (no native scheduling endpoints), this server implements a **local scheduling engine**:
+Since the reviewed Jules REST v1alpha API has **no scheduling endpoints** (native Jules web schedules are separate), this server implements a **local scheduling engine**:
 
 - **Persistent Storage**: Schedules stored in `~/.jules-mcp/schedules.enc`
 - **Cron Engine**: Uses `node-schedule` for reliable task execution
 - **Survives Restarts**: Schedules are rehydrated on server startup
-- **Autonomous Execution**: Scheduled tasks run even without active IDE sessions
+- **Autonomous Execution**: Scheduled tasks run while this bridge process remains running
 
 ## Installation
 
@@ -46,7 +52,7 @@ Since the Jules API v1alpha is **stateless** (no native scheduling endpoints), t
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/savethepolarbears/jules-mcp-server.git
+git clone https://github.com/MK-986123/jules-mcp-server.git
 cd jules-mcp-server
 
 # 2. Install dependencies
@@ -73,11 +79,9 @@ After building and setting `JULES_API_KEY`, you can validate the server end-to-e
 npm run mcp:smoke
 ```
 
-Expected output (with a valid key):
+The deterministic smoke test uses offline API fixtures and an isolated temporary storage directory. It verifies discovery, task creation, plan review, feedback, approval, status, pagination and patch retrieval through the real MCP client/server protocol. It never creates a real Jules task and needs no credential.
 
-- Lists 11 tools, 5 prompts, and the 4 core resources
-- Attempts to read a fake session ID and reports a Jules 404 (proves real API calls work)
-- Attempts a tool call with dummy data and reports the API error without crashing
+After privately configuring the real key, allowlist and separate encryption key, run `npm run doctor -- --live` for a read-only account check. See [connection verification](docs/CHATGPT.md) for the separate ChatGPT/tunnel checks.
 
 ### Global Installation (Recommended)
 
@@ -171,7 +175,7 @@ Once configured, your AI assistant can use Jules through natural language:
 
 The assistant will:
 
-1. Check `jules://sources` to find the repository
+1. Call `list_sources` to find the repository and copy its exact resource name
 2. Call `create_coding_task` tool with appropriate prompt
 3. Return the session ID for monitoring
 
@@ -207,7 +211,7 @@ The assistant will:
 
 The assistant will:
 
-1. Read `jules://sessions/abc123/full` to get the plan
+1. Call `get_session_review` and follow continuation tokens to read the plan
 2. Display the plan steps to you
 3. Call `manage_session` with `action=approve_plan` after your confirmation
 
@@ -222,6 +226,8 @@ The server has migrated from plain JSON storage (`schedules.json`) to encrypted 
 
 Detailed documentation has been moved to the `docs/` folder:
 
+- [ChatGPT setup](docs/CHATGPT.md) - Private tunnel connection and live verification
+- [Jules operations](docs/JULES_OPERATIONS.md) - Task briefs, approval and review practices
 - [API Reference](docs/API_REFERENCE.md) - Complete details on available MCP Tools, Resources, and Prompts.
 - [Architecture](docs/ARCHITECTURE.md) - System design and the "Thick Server" pattern.
 - [Configuration](docs/CONFIGURATION.md) - Environment variables and setup instructions.
@@ -284,7 +290,7 @@ export JULES_API_KEY="your-key-here"
 
 1. Check `jules://sources` resource to see connected repos
 2. Ensure the GitHub app is installed on the repository
-3. Use the exact resource name format: `sources/github/owner/repo`
+3. Copy the exact source resource name from `list_sources`; identifiers may be opaque
 
 ### Schedules not persisting
 

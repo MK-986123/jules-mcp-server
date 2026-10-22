@@ -65,12 +65,79 @@ describe("JulesTools", () => {
     (sec.RepositoryValidator.validateRepository as Mock).mockReset();
 
     client = new JulesClient("test-key");
+    vi.mocked(client.getSession).mockResolvedValue(makeSession());
+    vi.mocked(client.getSource).mockResolvedValue({
+      name: 'sources/github/owner/repo',
+      githubRepo: { owner: 'owner', repo: 'repo', defaultBranch: 'main', htmlUrl: 'https://github.com/owner/repo' },
+    });
     storage = new ScheduleStorage();
     scheduler = new CronEngine(storage, client);
     vi.mocked(CronEngine.validateCronExpression).mockImplementation(
       (cron) => cron !== "- - - - -",
     );
+    vi.mocked(CronEngine.isQuotaAwareSchedule).mockReturnValue(true);
     tools = new JulesTools(client, storage, scheduler);
+  });
+
+  describe('ChatGPT control workflow', () => {
+    it('passes discovery cursors through for tool-only clients', async () => {
+      vi.mocked(client.listSources).mockResolvedValue({ sources: [], nextPageToken: 'next-source' });
+      const result = JSON.parse(await tools.listSources({ page_size: 20, page_token: 'source-page' }));
+      expect(client.listSources).toHaveBeenCalledWith(20, 'source-page');
+      expect(result.nextPageToken).toBe('next-source');
+    });
+
+    it('resolves opaque source identities before task authorization', async () => {
+      vi.mocked(client.getSource).mockResolvedValue({ name: 'sources/opaque-id', githubRepo: { owner: 'actual', repo: 'repo', defaultBranch: { displayName: 'main' } } });
+      vi.mocked(client.createSession).mockResolvedValue(makeSession());
+      await tools.createCodingTask({ prompt: 'Fix the scoped regression', source: 'sources/opaque-id', branch: 'main', auto_create_pr: true, require_plan_approval: true });
+      const { RepositoryValidator } = await import('../utils/security.js');
+      expect(RepositoryValidator.validateRepository).toHaveBeenCalledWith('sources/github/actual/repo');
+      expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ sourceContext: { source: 'sources/opaque-id', githubRepoContext: { startingBranch: 'main' } } }));
+    });
+
+    it('refuses steering a session when its repository is unauthorized', async () => {
+      vi.mocked(client.getSession).mockResolvedValue(makeSession({ sourceContext: { source: 'sources/opaque-id' } }));
+      const { RepositoryValidator } = await import('../utils/security.js');
+      vi.mocked(RepositoryValidator.validateRepository).mockImplementation(() => { throw new SecurityError('Repository not authorized'); });
+      expect(JSON.parse(await tools.manageSession({ session_id: 'sess-1', action: 'approve_plan' })).success).toBe(false);
+      expect(client.approvePlan).not.toHaveBeenCalled();
+    });
+
+    it('accepts empty upstream approval responses without claiming a new state', async () => {
+      vi.mocked(client.approvePlan).mockResolvedValue({});
+      const result = JSON.parse(await tools.manageSession({ session_id: 'sess-1', action: 'approve_plan' }));
+      expect(result.message).toContain('accepted');
+      expect(result.newState).toBeUndefined();
+    });
+
+    it('never deletes a session if inspection fails', async () => {
+      vi.mocked(client.getSession).mockRejectedValue(new Error('Unavailable'));
+      expect(JSON.parse(await tools.deleteSession({ session_id: 'sess-1' })).success).toBe(false);
+      expect(client.deleteSession).not.toHaveBeenCalled();
+    });
+
+    it('stops for feedback even when only completion was requested', async () => {
+      vi.mocked(client.getSession).mockResolvedValue(makeSession({ state: 'AWAITING_USER_FEEDBACK' }));
+      const result = JSON.parse(await tools.waitForSession({ session_id: 'sess-1', timeout_seconds: 25, poll_interval_seconds: 5, target_states: ['COMPLETED'] }));
+      expect(result.finalState).toBe('AWAITING_USER_FEEDBACK');
+      expect(client.getSession).toHaveBeenCalledTimes(1);
+      expect(client.getSession).toHaveBeenCalledWith('sess-1', expect.any(Number));
+    });
+
+    it('preserves continuation tokens on an empty filtered activity page', async () => {
+      vi.mocked(client.listActivitiesSince).mockResolvedValue({ activities: [], nextPageToken: 'more-evidence' });
+      const result = JSON.parse(await tools.getActivitiesSince({ session_id: 'sess-1', since: '2026-01-01T00:00:00Z', page_token: 'previous-page' }));
+      expect(result.nextPageToken).toBe('more-evidence');
+      expect(client.listActivitiesSince).toHaveBeenCalledWith('sess-1', '2026-01-01T00:00:00Z', 50, 'previous-page');
+    });
+
+    it('rejects frequent schedules before writing persistent state', async () => {
+      vi.mocked(CronEngine.isQuotaAwareSchedule).mockReturnValue(false);
+      const result = JSON.parse(await tools.scheduleRecurringTask({ task_name: 'too-frequent', cron_expression: '* * * * *', prompt: 'Fix a scoped regression', source: 'sources/opaque-id', branch: 'main', auto_create_pr: true, require_plan_approval: true }));
+      expect(result.success).toBe(false);
+      expect(storage.upsertTask).not.toHaveBeenCalled();
+    });
   });
 
   // ── executeWithErrorHandling ──────────────────────────────────────────
@@ -211,6 +278,7 @@ describe("JulesTools", () => {
       expect(parsed.state).toBe("QUEUED");
       expect(client.createSession).toHaveBeenCalledWith({
         prompt: "test prompt long enough",
+        requirePlanApproval: true,
       });
     });
 
@@ -382,7 +450,7 @@ describe("JulesTools", () => {
       );
     });
 
-    it("reject_plan returns canceled state", async () => {
+    it("reject_plan sends revision feedback without deleting the session", async () => {
       vi.mocked(client.rejectPlan).mockResolvedValue({});
 
       const result = await tools.manageSession({
@@ -391,7 +459,10 @@ describe("JulesTools", () => {
       });
 
       const parsed = JSON.parse(result) as Record<string, unknown>;
-      expect(parsed.newState).toBe("CANCELED");
+      expect(parsed.message).toContain("revision requested");
+      expect(client.sendMessage).toHaveBeenCalledWith("sess-1", { prompt: expect.stringContaining("revise") });
+      expect(client.deleteSession).not.toHaveBeenCalled();
+      expect(client.rejectPlan).not.toHaveBeenCalled();
     });
   });
 
@@ -459,7 +530,7 @@ describe("JulesTools", () => {
       expect(client.getSession).toHaveBeenCalledTimes(2);
     });
 
-    it("throws timeout when state never reached", async () => {
+    it("returns last observed state when timeout expires", async () => {
       vi.useFakeTimers();
       const toolsPrivate = tools as unknown as {
         delay: (ms: number) => Promise<void>;
@@ -480,8 +551,11 @@ describe("JulesTools", () => {
         target_states: ["COMPLETED"],
       });
 
-      const parsed: { success: boolean; error: string } = JSON.parse(result);
-      expect(parsed.success).toBe(false);
+      const parsed = JSON.parse(result);
+      expect(parsed.timedOut).toBe(true);
+      expect(parsed.finalState).toBe('IN_PROGRESS');
+      expect(parsed.elapsedSeconds).toBe(30);
+      expect(client.getSession).toHaveBeenCalledTimes(6);
 
       vi.useRealTimers();
     });
@@ -626,7 +700,7 @@ describe("JulesTools", () => {
 
       const result = await tools.deleteSession({ session_id: "sess-active" });
       const parsed = JSON.parse(result) as Record<string, unknown>;
-      expect(parsed.message).toContain("canceled");
+      expect(parsed.message).toContain("deleted");
     });
 
     it("reports deleted for completed sessions", async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { CronEngine } from "../scheduler/cron-engine.js";
 import { ScheduleStorage } from "../storage/schedule-store.js";
 import { JulesClient } from "../api/jules-client.js";
@@ -6,6 +6,7 @@ import type { ScheduledTask } from "../types/schedule.js";
 import type { Session } from "../types/jules-api.js";
 import { randomUUID } from "crypto";
 import schedule from "node-schedule";
+import { RepositoryValidator } from "../utils/security.js";
 
 vi.mock("../storage/schedule-store.js");
 vi.mock("../api/jules-client.js");
@@ -17,14 +18,25 @@ describe("CronEngine", () => {
   let mockLogger: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    vi.stubEnv('JULES_ALLOWED_REPOS', 'owner/repo');
+    RepositoryValidator.initialize();
     storage = new ScheduleStorage();
     client = new JulesClient();
+    vi.mocked(client.getSource).mockResolvedValue({
+      name: 'sources/github-owner-repo',
+      githubRepo: { owner: 'owner', repo: 'repo', defaultBranch: { displayName: 'main' } },
+    });
     mockLogger = vi.fn();
     engine = new CronEngine(
       storage,
       client,
       mockLogger as unknown as (message: string) => void,
     );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    engine.shutdown();
   });
 
   describe("isQuotaAwareSchedule", () => {
@@ -63,6 +75,7 @@ describe("CronEngine", () => {
 
       // "0 0 * * * *" runs every hour at the 0th minute and 0th second (safe)
       expect(CronEngine.isQuotaAwareSchedule("0 0 * * * *")).toBe(true);
+      expect(CronEngine.isQuotaAwareSchedule("* 0 * * * *")).toBe(false);
     });
 
     it("should return false if minute is out of bounds", () => {
@@ -157,7 +170,7 @@ describe("CronEngine", () => {
           githubRepoContext: { startingBranch: "main" },
         },
         automationMode: "AUTO_CREATE_PR",
-        requirePlanApproval: undefined,
+        requirePlanApproval: true,
         title: undefined,
       });
       expect(storage.updateLastRun).toHaveBeenCalledWith(
@@ -189,7 +202,7 @@ describe("CronEngine", () => {
 
       engine.scheduleTask(task);
 
-      // Setup mock to throw error all 3 times to exhaust retries
+      // The request may have succeeded remotely despite the lost response.
       vi.mocked(client.createSession).mockRejectedValue(new Error("API Down"));
 
       if (executedCallback) {
@@ -204,8 +217,30 @@ describe("CronEngine", () => {
       );
 
       expect(mockLogger).toHaveBeenCalledWith(
-        expect.stringContaining('failed after 3 retries: API Down')
+        expect.stringContaining('creation was not replayed: API Down')
       );
+      expect(client.createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('checks resolved source metadata against the current allowlist before creation', async () => {
+      const task: ScheduledTask = {
+        id: 'denied', name: 'denied', cron: '0 0 * * *',
+        taskPayload: { prompt: 'test', source: 'sources/opaque', automationMode: 'AUTO_CREATE_PR' },
+        createdAt: new Date().toISOString(), enabled: true,
+      };
+      let callback: (() => Promise<void>) | undefined;
+      vi.spyOn(schedule, 'scheduleJob').mockImplementation((_cron, cb) => {
+        callback = cb as () => Promise<void>;
+        return { cancel: vi.fn(), nextInvocation: vi.fn() } as unknown as schedule.Job;
+      });
+      vi.mocked(client.getSource).mockResolvedValue({
+        name: 'sources/opaque', githubRepo: { owner: 'other', repo: 'repo', defaultBranch: { displayName: 'main' } },
+      });
+      engine.scheduleTask(task);
+      await callback?.();
+      expect(client.getSource).toHaveBeenCalledWith('sources/opaque');
+      expect(client.createSession).not.toHaveBeenCalled();
+      expect(storage.updateLastRun).toHaveBeenCalledWith('denied', expect.any(String), undefined);
     });
   });
 

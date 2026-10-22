@@ -5,14 +5,18 @@
 
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import type { JulesClient } from '../api/jules-client.js';
+import { JulesAPIError, type JulesClient } from '../api/jules-client.js';
 import type { ScheduleStorage } from '../storage/schedule-store.js';
+import { JulesResources } from './resources.js';
 import { CronEngine } from '../scheduler/cron-engine.js';
 import type { ScheduledTask } from '../types/schedule.js';
 import type { Session, SessionState } from '../types/jules-api.js';
 import { RepositoryValidator, smartTruncate, containsSecret, RateLimitError, SecurityError, RateLimiter } from '../utils/security.js';
 
 // Input validation schemas
+const SourceNameSchema = z.string().max(512)
+  .regex(/^sources\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/, 'Use the exact source name returned by list_sources')
+  .refine((name) => !name.split('/').some((part) => part === '.' || part === '..'), 'Invalid source path');
 export const CreateTaskSchema = z.object({
   prompt: z
     .string()
@@ -23,14 +27,9 @@ export const CreateTaskSchema = z.object({
     .describe(
       'Natural language instruction for the coding task. Be specific about files, goals, and constraints.'
     ),
-  source: z
-    .string()
-    .regex(
-      /^sources\/github\/[\w-]+\/[\w-]+$/,
-      'Source must be in format sources/github/owner/repo'
-    )
+  source: SourceNameSchema
     .describe(
-      'Repository resource name (format: sources/github/owner/repo). Check jules://sources resource first.'
+      'Exact source resource name returned by list_sources.'
     ),
   branch: z
     .string()
@@ -44,7 +43,7 @@ export const CreateTaskSchema = z.object({
     .describe('If true, automatically creates a Pull Request upon completion'),
   require_plan_approval: z
     .boolean()
-    .default(false)
+    .default(true)
     .describe(
       'If true, pauses at AWAITING_PLAN_APPROVAL state for manual review'
     ),
@@ -102,9 +101,10 @@ export const WaitForSessionSchema = z.object({
     .describe('The ID of the session to wait for'),
   timeout_seconds: z
     .number()
-    .min(30, 'timeout_seconds must be at least 30')
-    .max(1800, 'timeout_seconds must not exceed 1800')
-    .default(300)
+    .int()
+    .min(5, 'timeout_seconds must be at least 5')
+    .max(50, 'timeout_seconds must not exceed 50')
+    .default(25)
     .describe('Maximum time to wait before timing out'),
   poll_interval_seconds: z
     .number()
@@ -114,11 +114,22 @@ export const WaitForSessionSchema = z.object({
     .describe('Polling interval while waiting for the target state'),
   target_states: z
     .array(waitTargetStateSchema)
-    .default(['COMPLETED', 'FAILED', 'CANCELED'])
+    .default(['COMPLETED', 'FAILED', 'CANCELED', 'AWAITING_PLAN_APPROVAL', 'AWAITING_USER_FEEDBACK'])
     .describe('States that should stop the polling loop'),
 });
 
+export const PaginationSchema = z.object({
+  page_size: z.number().int().min(1).max(100).default(20),
+  page_token: z.string().max(4096).optional(),
+});
+
+export const SessionReviewSchema = z.object({
+  session_id: z.string().regex(/^[\w-]+$/),
+  page_token: z.string().max(4096).optional(),
+});
+
 export const GetActivitiesSinceSchema = z.object({
+  page_token: z.string().max(4096).optional(),
   session_id: z
     .string()
     .regex(/^[\w-]+$/, 'Session ID contains invalid characters')
@@ -159,13 +170,8 @@ export const ScheduleTaskSchema = z.object({
     .max(10000, 'Prompt must not exceed 10,000 characters')
     .refine((val) => !containsSecret(val), 'Prompt contains potential secrets (e.g., API keys). Please remove them.')
     .describe('The coding task instruction to execute'),
-  source: z
-    .string()
-    .regex(
-      /^sources\/github\/[\w-]+\/[\w-]+$/,
-      'Source must be in format sources/github/owner/repo'
-    )
-    .describe('Repository resource name (sources/github/owner/repo)'),
+  source: SourceNameSchema
+    .describe('Exact source resource name returned by list_sources'),
   branch: z
     .string()
     .regex(/^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*$/, 'Branch name contains invalid characters')
@@ -178,7 +184,7 @@ export const ScheduleTaskSchema = z.object({
     .describe('Whether to auto-create PRs'),
   require_plan_approval: z
     .boolean()
-    .default(false)
+    .default(true)
     .describe('Whether to require manual plan approval'),
   timezone: z
     .string()
@@ -191,17 +197,12 @@ export const DeleteScheduleSchema = z.object({
 });
 
 export const DeleteSessionSchema = z.object({
-  session_id: z.string().describe('The ID of the session to delete or cancel'),
+  session_id: z.string().regex(/^[\w-]+$/).describe('The ID of the session to delete'),
 });
 
 export const GetSourceDetailsSchema = z.object({
-  source_name: z
-    .string()
-    .regex(
-      /^sources\/github\/[\w-]+\/[\w-]+$/,
-      'Source name must be in format sources/github/owner/repo'
-    )
-    .describe('The resource name of the source (e.g., sources/github/owner/repo)'),
+  source_name: SourceNameSchema
+    .describe('Exact source resource name returned by list_sources'),
 });
 
 /**
@@ -224,6 +225,65 @@ export class JulesTools {
   ) {
     // Rate limiting applies only to task creation (write operations). Read/poll operations are intentionally exempt.
     this.rateLimiter = new RateLimiter(10, 60000);
+  }
+
+  /**
+   * Resolves a source identity before enforcing the repository allowlist.
+   * @param sourceName - Exact resource name returned by the Jules API.
+   * @returns Validated source metadata.
+   */
+  private async validateSource(sourceName: string) {
+    const source = await this.client.getSource(sourceName);
+    if (!source.githubRepo) throw new SecurityError('Source has no GitHub repository identity.');
+    RepositoryValidator.validateRepository(`sources/github/${source.githubRepo.owner}/${source.githubRepo.repo}`);
+    return source;
+  }
+
+  /**
+   * Validates repository access before steering an existing session.
+   * @param sessionId - Session to inspect before any mutation.
+   * @returns The inspected session.
+   */
+  private async validateSession(sessionId: string): Promise<Session> {
+    const session = await this.client.getSession(sessionId);
+    if (session.sourceContext?.source) await this.validateSource(session.sourceContext.source);
+    return session;
+  }
+
+  /**
+   * Lists one page of connected source repositories for tool-only clients.
+   * @param args - Page size and continuation token.
+   * @returns Source payload with its original continuation token.
+   */
+  async listSources(args: z.infer<typeof PaginationSchema>): Promise<string> {
+    return this.executeWithErrorHandling(() => this.client.listSources(args.page_size, args.page_token));
+  }
+
+  /**
+   * Lists one page of existing Jules sessions without starting work.
+   * @param args - Page size and continuation token.
+   * @returns Session payload with its original continuation token.
+   */
+  async listSessions(args: z.infer<typeof PaginationSchema>): Promise<string> {
+    return this.executeWithErrorHandling(() => this.client.listSessions(args.page_size, args.page_token));
+  }
+
+  /**
+   * Reads the session and one page of plan, question and progress evidence.
+   * @param args - Session ID and activity continuation token.
+   * @returns Review payload, including the next activity cursor when present.
+   */
+  async getSessionReview(args: z.infer<typeof SessionReviewSchema>): Promise<string> {
+    return this.executeWithErrorHandling(async () => JSON.parse(await new JulesResources(this.client, this.storage, this.scheduler).getSessionFull(args.session_id, args.page_token)) as unknown);
+  }
+
+  /**
+   * Reads patch artifacts for review through a tool-only client.
+   * @param args - Session ID and activity continuation token.
+   * @returns Patch evidence and continuation information.
+   */
+  async getSessionDiff(args: z.infer<typeof SessionReviewSchema>): Promise<string> {
+    return this.executeWithErrorHandling(async () => JSON.parse(await new JulesResources(this.client, this.storage, this.scheduler).getSessionDiff(args.session_id, args.page_token)) as unknown);
   }
 
   /**
@@ -271,11 +331,12 @@ export class JulesTools {
    *
    * @template T The expected return type of the operation.
    * @param operation - The asynchronous operation to execute.
-   * @param successTransform - An optional function to transform the result into a specific JSON structure on success.
+   * @param reconciliation - Safe recovery guidance for calls that may mutate upstream state.
    * @returns {Promise<string>} A JSON string representing the structured result or error.
    */
   private async executeWithErrorHandling<T>(
-    operation: () => Promise<T>
+    operation: () => Promise<T>,
+    reconciliation?: string
   ): Promise<string> {
     try {
       const result = await operation();
@@ -290,13 +351,21 @@ export class JulesTools {
       const logMsg = error instanceof Error ? error.message : 'Unknown error';
       console.error(`Tool execution error: ${logMsg}`);
 
-      const errorMsg = isPassthrough && error instanceof Error
+      const apiError = error instanceof JulesAPIError;
+      const errorMsg = apiError
+        ? `Jules API request failed${error.statusCode ? ` (HTTP ${error.statusCode})` : ''}.`
+        : isPassthrough && error instanceof Error
         ? error.message
         : 'An internal error occurred. Please check server logs.';
 
       return JSON.stringify({
         success: false,
         error: errorMsg,
+        ...(apiError ? {
+          statusCode: error.statusCode,
+          outcomeUnknown: Boolean(reconciliation && (!error.statusCode || error.statusCode >= 500)),
+          recovery: reconciliation || 'Check the configured credentials, network, quotas and session status before retrying.',
+        } : {}),
       });
     }
   }
@@ -317,7 +386,7 @@ export class JulesTools {
       }
 
       // SECURITY: Validate repository allowlist
-      RepositoryValidator.validateRepository(args.source);
+      await this.validateSource(args.source);
 
       const session = await this.client.createSession({
         prompt: args.prompt,
@@ -335,7 +404,7 @@ export class JulesTools {
       });
 
       const statusMsg = args.require_plan_approval
-        ? 'Session created and waiting for plan approval. Use jules://sessions/{id}/full to review the plan, then call manage_session with action=approve_plan.'
+        ? 'Session created with plan approval required; planning may still be in progress. Use jules://sessions/{id}/full to review the plan, then call manage_session with action=approve_plan.'
         : 'Session created and executing automatically.';
 
       return {
@@ -345,7 +414,7 @@ export class JulesTools {
         monitorUrl: this.getMonitorUrl(session),
         prUrl: this.getPullRequestUrl(session),
       };
-    });
+    }, 'Check list_sessions for this task before creating another session; a lost response can follow successful creation.');
   }
 
   /**
@@ -366,6 +435,7 @@ export class JulesTools {
       const session = await this.client.createSession({
         prompt: args.prompt,
         title: args.title,
+        requirePlanApproval: true,
       });
 
       return {
@@ -374,7 +444,7 @@ export class JulesTools {
         monitorUrl: this.getMonitorUrl(session),
         prUrl: this.getPullRequestUrl(session),
       };
-    });
+    }, 'Check list_sessions for this task before creating another session; a lost response can follow successful creation.');
   }
 
   /**
@@ -389,19 +459,21 @@ export class JulesTools {
     args: z.infer<typeof ManageSessionSchema>
   ): Promise<string> {
     return this.executeWithErrorHandling(async () => {
+      await this.validateSession(args.session_id);
       if (args.action === 'approve_plan') {
         const session = await this.client.approvePlan(args.session_id);
         return {
-          message: 'Plan approved. Session is now executing.',
+          message: 'Plan approval accepted. Check get_session_status for the current state.',
           newState: session.state,
         };
       }
 
       if (args.action === 'reject_plan') {
-        await this.client.rejectPlan(args.session_id);
+        await this.client.sendMessage(args.session_id, {
+          prompt: args.message || 'Please revise the proposed plan. Wait for my feedback before proceeding.',
+        });
         return {
-          message: 'Plan rejected. Session has been canceled.',
-          newState: 'CANCELED',
+          message: 'Plan revision requested. The session was preserved; review its next plan before approving.',
         };
       }
 
@@ -421,7 +493,7 @@ export class JulesTools {
       }
 
       throw new Error('Invalid action');
-    });
+    }, 'Check get_session_status and all pages of get_session_review before repeating feedback or approval; the earlier action may have succeeded.');
   }
 
   /**
@@ -462,32 +534,42 @@ export class JulesTools {
   ): Promise<string> {
     return this.executeWithErrorHandling(async () => {
       const startedAt = Date.now();
-      const timeoutMs = args.timeout_seconds * 1000;
-      const targetStates = new Set<SessionState>(args.target_states);
+      const deadline = startedAt + args.timeout_seconds * 1000;
+      const targetStates = new Set<SessionState>([...args.target_states, 'AWAITING_PLAN_APPROVAL', 'AWAITING_USER_FEEDBACK', 'COMPLETED', 'FAILED', 'CANCELED']);
+      let lastSession: Session | undefined;
+      const timedOut = () => ({
+        sessionId: lastSession?.id || args.session_id,
+        finalState: lastSession?.state || 'UNKNOWN',
+        timedOut: true,
+        elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+        nextSteps: this.getNextStepsForState(lastSession?.state || 'UNKNOWN'),
+        monitorUrl: lastSession ? this.getMonitorUrl(lastSession) : undefined,
+      });
 
       while (true) {
-        const session = await this.client.getSession(args.session_id);
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) return timedOut();
+        let session: Session;
+        try {
+          session = await this.client.getSession(args.session_id, remainingMs);
+        } catch (error) {
+          if (Date.now() >= deadline) return timedOut();
+          throw error;
+        }
+        lastSession = session;
         const currentState = session.state;
-        const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-
         if (currentState && targetStates.has(currentState)) {
           return {
             sessionId: session.id,
             title: session.title,
             finalState: currentState,
-            elapsedSeconds,
+            elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
             nextSteps: this.getNextStepsForState(currentState),
             prUrl: this.getPullRequestUrl(session),
           };
         }
-
-        if (Date.now() - startedAt >= timeoutMs) {
-          throw new Error(
-            `Timed out waiting for session "${args.session_id}" after ${elapsedSeconds} seconds`
-          );
-        }
-
-        await this.delay(args.poll_interval_seconds * 1000);
+        const delayMs = Math.min(args.poll_interval_seconds * 1000, Math.max(0, deadline - Date.now()));
+        if (delayMs > 0) await this.delay(delayMs);
       }
     });
   }
@@ -506,7 +588,8 @@ export class JulesTools {
       const response = await this.client.listActivitiesSince(
         args.session_id,
         args.since,
-        args.page_size ?? 50
+        args.page_size ?? 50,
+        args.page_token
       );
 
       return {
@@ -514,6 +597,7 @@ export class JulesTools {
         since: args.since,
         count: response.activities.length,
         activities: response.activities,
+        nextPageToken: response.nextPageToken,
       };
     });
   }
@@ -537,6 +621,10 @@ export class JulesTools {
         );
       }
 
+      if (!CronEngine.isQuotaAwareSchedule(args.cron_expression)) {
+        throw new SecurityError('Schedules must execute at most once per hour.');
+      }
+
       // Check for name collision
       const existing = await this.storage.getTaskByName(args.task_name);
       if (existing) {
@@ -546,7 +634,7 @@ export class JulesTools {
       }
 
       // SECURITY: Validate repository allowlist
-      RepositoryValidator.validateRepository(args.source);
+      await this.validateSource(args.source);
 
       // Create scheduled task
       const task: ScheduledTask = {
@@ -654,24 +742,12 @@ export class JulesTools {
     args: z.infer<typeof DeleteSessionSchema>
   ): Promise<string> {
     return this.executeWithErrorHandling(async () => {
-      const [session] = await Promise.all([
-        this.client.getSession(args.session_id),
-        this.client.deleteSession(args.session_id),
-      ]);
-      const activeStates: SessionState[] = [
-        'QUEUED',
-        'PLANNING',
-        'IN_PROGRESS',
-        'AWAITING_PLAN_APPROVAL',
-        'AWAITING_USER_FEEDBACK',
-      ];
-      const action = session.state && activeStates.includes(session.state)
-        ? 'canceled'
-        : 'deleted';
+      await this.validateSession(args.session_id);
+      await this.client.deleteSession(args.session_id);
       return {
-        message: `Session "${args.session_id}" ${action} successfully`,
+        message: `Session "${args.session_id}" deleted successfully`,
       };
-    });
+    }, 'Inspect session status before repeating deletion; the earlier delete may have succeeded.');
   }
 
   /**
@@ -691,7 +767,7 @@ export class JulesTools {
         repository: source.githubRepo
           ? `${source.githubRepo.owner}/${source.githubRepo.repo}`
           : 'Unknown',
-        defaultBranch: source.githubRepo?.defaultBranch || 'main',
+        defaultBranch: typeof source.githubRepo?.defaultBranch === 'string' ? source.githubRepo.defaultBranch : source.githubRepo?.defaultBranch?.displayName,
         url: source.githubRepo?.htmlUrl,
         metadata: source.githubRepo,
       };
@@ -710,9 +786,9 @@ export class JulesTools {
       QUEUED: 'Session is queued. Wait for it to start planning.',
       PLANNING: 'Jules is generating a plan. Wait for plan completion.',
       AWAITING_PLAN_APPROVAL:
-        'Plan is ready. Read jules://sessions/{id}/full to review the plan, then call manage_session with action=approve_plan to proceed.',
+        'Plan is ready. Call get_session_review to review the plan, then call manage_session with action=approve_plan to proceed.',
       AWAITING_USER_FEEDBACK:
-        'Jules asked a clarifying question. Read jules://sessions/{id}/full to see the agentMessaged activity, then call manage_session with action=send_message to answer it.',
+        'Jules asked a clarifying question. Call get_session_review to see the agentMessaged activity, then call manage_session with action=send_message to answer it.',
       IN_PROGRESS:
         'Session is executing. Monitor progress via jules://sessions/{id}/full.',
       PAUSED:
